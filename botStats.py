@@ -1,0 +1,932 @@
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+import requests, os, re
+from functools import wraps
+from telegram.error import BadRequest
+import time
+import httpx
+from functools import wraps
+from telegram import Update
+from telegram.ext import ContextTypes
+API_CACHE = {}
+
+# Usuarios con acceso completo (IDs de Telegram)
+ALLOWED_USERS = {
+    1026764890, # pedirselo a @userinfobot Fran
+    6810783940, #Mason
+}
+
+def restricted(func):
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user_id = None
+        if update.message:
+            user_id = update.message.from_user.id
+        elif update.callback_query:
+            user_id = update.callback_query.from_user.id
+
+        if user_id not in ALLOWED_USERS:
+            # Usuarios no autorizados → mensaje de suscripción
+            if update.message:
+                await update.message.reply_text("🚫 Solo usuarios suscritos pueden usar estadísticas.\n💳 Contacta con @MasonBetAdmin para acceder.")
+            elif update.callback_query:
+                await update.callback_query.answer("🚫 Suscripción requerida", show_alert=True)
+            return  # ❌ Bloquear acceso al handler
+        return await func(update, context, *args, **kwargs)
+    return wrapper
+
+
+def safe_handler(func):
+    @wraps(func)
+    async def wrapper(update, context, *args, **kwargs):
+        try:
+            return await func(update, context, *args, **kwargs)
+        except BadRequest as e:
+            msg = str(e)
+            if "Query is too old" in msg or "Message is not modified" in msg:
+                # Ignorar estos errores comunes
+                return
+            else:
+                raise  # otros errores sí los dejamos pasar
+        except Exception as e:
+            print(f"⚠️ Error in handler {func.__name__}: {e}")
+            return
+    return wrapper
+
+def api_get(path: str, params: dict, ttl: int = 60):
+    key = (path, tuple(sorted(params.items())))
+    now = time.time()
+    if key in API_CACHE:
+        exp, data = API_CACHE[key]
+        if now < exp:
+            return 200, data
+    r = requests.get(f"{BASE}{path}", headers=BASE_HEADERS, params=params, timeout=20)
+    try:
+        data = r.json()
+    except Exception:
+        data = {}
+    API_CACHE[key] = (now + ttl, data)
+    return r.status_code, data
+
+async def api_get_async(path, params):
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(f"{BASE}{path}", headers=BASE_HEADERS, params=params)
+        return r.status_code, r.json()
+
+
+# ----------------- CONFIG -----------------
+TOKEN   = os.getenv("BOT_TOKEN",   "8421116318:AAGiLGwQtEDy796uy0qFOQD1X_X6zSGhb_E")
+API_KEY = os.getenv("FOOTBALL_KEY","d9aead5de5f11be689ee1ae35e398a60")
+SEASON  = 2025  # plan free (2021–2023)
+BASE    = "https://v3.football.api-sports.io"
+BASE_HEADERS = {"x-apisports-key": API_KEY}
+
+# Acceso rápido (Top-5 + competiciones UEFA)
+POPULAR_LEAGUES = {
+    "La Liga (ESP)": "140",
+    "Premier League (ENG)": "39",
+    "Serie A (ITA)": "135",
+    "Bundesliga (GER)": "78",
+    "Ligue 1 (FRA)": "61",
+    "Champions League": "2",
+    "Europa League": "3",
+    "Conference League": "848",
+}
+
+# Ligas permitidas por país (solo 1ª y 2ª división)
+ALLOWED_LEAGUES = {
+    # --- EUROPE ---
+    "Spain": [140, 141],        # La Liga + La Liga2
+    "England": [39, 40],        # Premier League + Championship
+    "Italy": [135, 136],        # Serie A + Serie B
+    "Germany": [78, 79],        # Bundesliga + Bundesliga 2
+    "France": [61, 62],         # Ligue 1 + Ligue 2
+    "Portugal": [94, 95],       # Primeira Liga + Liga Portugal 2
+    "Netherlands": [88, 89],    # Eredivisie + Eerste Divisie
+    "Turkey": [203, 204],       # Süper Lig + 1. Lig
+    "Greece": [197, 198],       # Super League + Super League 2
+    "Denmark": [80, 81],        # Superliga + 1st Division
+
+    # --- AMERICAS ---
+    "Brazil": [71, 72],         # Serie A + Serie B
+    "Argentina": [128, 129],    # Liga Profesional + Primera Nacional
+    "USA": [253, 254],          # MLS + USL Championship
+    "Colombia": [239, 240],     # Primera A + Primera B
+
+    # --- MIDDLE EAST ---
+    "Saudi Arabia": [152, 153], # Pro League + Division 1
+
+    # --- OTHERS ---
+    "China": [169, 170],        # Super League + League One
+}
+
+
+# Regiones → países (puedes ampliar)
+REGIONS = {
+    "Europe": [
+        "Spain","England","Italy","Germany","France","Portugal","Netherlands","Turkey","Greece","Denmark",
+    ],
+    "Americas": [
+        "Brazil","Argentina","USA","Colombia",
+    ],
+    "Middle East": [
+        "Saudi Arabia",
+    ],
+    "Others": [
+        "China",
+    ],
+}
+
+# Categorías (para navegación)
+CATS = [
+    "Passes", "Tackles", "Fouls", "Fouls Drawn",
+    "Yellowcards", "Redcards", "Shots Total", "Shots On Target",
+    "Assists", "Goals", "SOA", "Saves", "Offsides"
+]
+
+# ----------------- I18N -----------------
+T = {
+    "en": {
+        "choose_lang": "Select your language / Selecciona tu idioma:",
+        "welcome_card": (
+            "❓ *What can this bot do?*\n\n"
+            "⚽ *MasónBet Stats Bot* stats masonicas, gets football player stats in real time.\n\n"
+            "✅ Goals, assists, shots on target, saves\n"
+            "✅ Filter by minutes/form/starters\n"
+            "✅ Search players & analyze history\n"
+            "✅ Fast & accurate\n\n"
+            "🔥 Start analyzing football stats today!"
+        ),
+        "commands": (
+            "📌 *Available Commands:*\n"
+            "/start - Start the bot\n"
+            "/stats - View player stats (Region → Country → League → Team → Category)\n"
+            "/player {name} - Search for a player\n"
+            "/fixture TeamA vs TeamB - Head-to-head recent results\n"
+            "/subscribe - Contact admin\n"
+            "/help - Show this help"
+        ),
+        "main_menu_title": "Main menu",
+        "btn_stats": "📊 Player stats",
+        "btn_help": "❓ Help",
+        "btn_back": "⬅️ Back",
+        "btn_home": "🏠 Home",
+        "btn_subscribe": "💳 Subscribe",
+
+        "select_region": "🌍 Choose a region:",
+        "select_country": "🗺️ Choose a country:",
+        "select_league": f"🏆 Choose a league (Season {SEASON}/{SEASON+1}):",
+        "select_team": "⚽ Choose a team:",
+        "choose_category": "📈 Choose a stat category:",
+        "no_teams": f"⚠️ No teams for season {SEASON}/{SEASON+1}.",
+        "no_players": "⚠️ No player data yet for this team/season.",
+        "subscribe_msg": "📩 Contact me at @MasonBetAdmin to subscribe.",
+        "player_choose": "👤 Choose a player:",
+        "player_summary_title": "📋 Player summary",
+        "fx_prompt": "✍️ Please use: /fixture TeamA vs TeamB",
+        "fx_search": "🔎 Fetching head-to-head…",
+        "fx_no": "❌ No head-to-head data found.",
+        "popular_block": "⭐ Quick access (popular leagues):",
+
+        "region_europe": "🇪🇺 Europe",
+        "region_americas": "🌎 Americas",
+        "region_me": "🕌 Middle East",
+        "region_others": "🌐 Others",
+        "region_popular": "⭐ Quick access",
+        "region_nationals": "🏳️ National Teams",
+        "choose_country_national": "🏳️ Choose a country (national team):",
+        "no_nat_team": "⚠️ No national team found for this country.",
+    },
+    "es": {
+        "choose_lang": "Selecciona tu idioma / Select your language:",
+        "welcome_card": (
+            "❓ *¿Qué puede hacer este bot?*\n\n"
+            "⚽ *MasónBet Stats Bot* Estadísticas masónicas en tiempo real.\n\n"
+            "✅ Goles, asistencias, tiros a puerta, paradas\n"
+            "✅ Filtro por minutos/forma/titulares\n"
+            "✅ Búsqueda de jugadores e histórico\n"
+            "✅ Rápido y preciso\n\n"
+            "🔥 ¡Empieza a analizar estadísticas hoy!"
+        ),
+        "commands": (
+            "📌 *Comandos disponibles:*\n"
+            "/start - Iniciar el bot\n"
+            "/stats - Ver estadísticas (Región → País → Liga → Equipo → Categoría)\n"
+            "/fixture TeamA vs TeamB - Enfrentamientos recientes\n"
+            "/subscribe - Contactar con el admin\n"
+            "/help - Mostrar esta ayuda"
+        ),
+        "main_menu_title": "Menú principal",
+        "btn_stats": "📊 Estadísticas",
+        "btn_help": "❓ Ayuda",
+        "btn_back": "⬅️ Atrás",
+        "btn_home": "🏠 Inicio",
+        "btn_subscribe": "💳 Suscribirse",
+
+        "select_region": "🌍 Elige una región:",
+        "select_country": "🗺️ Elige un país:",
+        "select_league": f"🏆 Elige una liga (Temporada {SEASON}/{SEASON+1}):",
+        "select_team": "⚽ Elige un equipo:",
+        "choose_category": "📈 Elige una categoría:",
+        "no_teams": f"⚠️ No hay equipos para la temporada {SEASON}/{SEASON+1}.",
+        "no_players": "⚠️ Aún no hay datos de jugadores para este equipo/temporada.",
+        "subscribe_msg": "📩 Contáctame en @MasonBetAdmin para suscribirte.",
+        "player_choose": "👤 Elige un jugador:",
+        "player_summary_title": "📋 Resumen del jugador",
+        "fx_prompt": "✍️ Usa: /fixture TeamA vs TeamB",
+        "fx_search": "🔎 Obteniendo head-to-head…",
+        "fx_no": "❌ No hay datos de enfrentamientos.",
+        "popular_block": "⭐ Acceso rápido (ligas populares):",
+
+        "region_europe": "🇪🇺 Europa",
+        "region_americas": "🌎 Américas",
+        "region_me": "🕌 Oriente Medio",
+        "region_others": "🌐 Otras",
+        "region_popular": "⭐ Acceso rápido",
+        "region_nationals": "🏳️ Selecciones",
+        "choose_country_national": "🏳️ Elige un país (selección):",
+        "no_nat_team": "⚠️ No se encontró la selección de este país.",
+    }
+}
+def tr(ctx, key):
+    return T.get(ctx.user_data.get("lang","en"), T["en"]).get(key, key)
+
+# ----------------- Helpers -----------------
+def api_get(path: str, params: dict):
+    r = requests.get(f"{BASE}{path}", headers=BASE_HEADERS, params=params, timeout=20)
+    try: return r.status_code, r.json()
+    except Exception: return r.status_code, {}
+
+def B(text: str, data: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text, callback_data=data)
+
+def make_keyboard(items, prefix="", cols=2):
+    """items = [(label, value), ...] -> filas con N columnas"""
+    rows, row = [], []
+    for i, (label, val) in enumerate(items, start=1):
+        row.append(B(label, f"{prefix}{val}"))
+        if i % cols == 0:
+            rows.append(row); row = []
+    if row: rows.append(row)
+    return rows
+
+# --- categorías con slug seguro para callback_data ---
+def slugify(s: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '-', s.lower()).strip('-')
+CAT_SLUG = {slugify(c): c for c in CATS}
+
+# ----------------- Keyboards -----------------
+def kb_language():
+    return InlineKeyboardMarkup([[B("🇬🇧 English", "lang_en"), B("🇪🇸 Español", "lang_es")]])
+
+def kb_main(ctx):
+    return InlineKeyboardMarkup([
+        [B(tr(ctx,"btn_stats"),     "menu_stats")],
+        [B(tr(ctx,"btn_help"),      "menu_help")],
+        [B(tr(ctx,"btn_subscribe"), "menu_subscribe")],
+    ])
+
+def add_nav(ctx, rows):
+    rows.append([B(tr(ctx,"btn_home"), "home")])
+    return InlineKeyboardMarkup(rows)
+
+def kb_regions(ctx):
+    return InlineKeyboardMarkup([
+        [B(tr(ctx,"region_europe"),  "region_Europe"), B(tr(ctx,"region_americas"), "region_Americas")],
+        [B(tr(ctx,"region_me"),      "region_Middle East"), B(tr(ctx,"region_others"), "region_Others")],
+        [B(tr(ctx,"region_popular"), "region_POPULAR"), B(tr(ctx,"region_nationals"), "region_NATIONALS")],
+        [B(tr(ctx,"btn_home"), "home")]
+    ])
+
+# ----------------- START & MENÚ -----------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.setdefault("lang", None)
+    if update.message:
+        await update.message.reply_text(tr(context,"choose_lang"), reply_markup=kb_language())
+    else:
+        await update.callback_query.edit_message_text(tr(context,"choose_lang"), reply_markup=kb_language())
+
+async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    context.user_data["lang"] = "en" if q.data=="lang_en" else "es"
+    await q.edit_message_text(tr(context,"welcome_card"), parse_mode="Markdown")
+    await q.message.reply_text(tr(context,"commands"), parse_mode="Markdown")
+    await q.message.reply_text(f"🧭 *{tr(context,'main_menu_title')}*", parse_mode="Markdown",
+                               reply_markup=kb_main(context))
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(tr(context,"commands"), parse_mode="Markdown")
+
+async def menu_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text(tr(context,"commands"), parse_mode="Markdown",
+                              reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]]))
+
+async def menu_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text(tr(context,"subscribe_msg"),
+                              reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]]))
+
+async def go_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.edit_message_text(f"🧭 *{tr(context,'main_menu_title')}*", parse_mode="Markdown",
+                              reply_markup=kb_main(context))
+
+# ----------------- /stats → Región → País → Liga -----------------
+@restricted
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(tr(context,"select_region"), reply_markup=kb_regions(context))
+
+@restricted
+async def menu_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.edit_message_text(tr(context,"select_region"), reply_markup=kb_regions(context))
+
+@restricted
+async def handle_region(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    region = q.data.replace("region_","")
+
+    # Acceso rápido
+    if region == "POPULAR":
+        rows = make_keyboard(list(POPULAR_LEAGUES.items()), prefix="league_", cols=2)
+        rows.append([B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")])
+        await q.edit_message_text(tr(context,"popular_block"), reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    # Selecciones nacionales
+    if region == "NATIONALS":
+        all_countries = sorted(set(sum(REGIONS.values(), [])))
+        rows = make_keyboard([(c, c) for c in all_countries], prefix="ncountry_", cols=2)
+        rows.append([B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")])
+        await q.edit_message_text(tr(context,"choose_country_national"), reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    # Clubes por regiones
+    countries = REGIONS.get(region, [])
+    rows = make_keyboard([(c, c) for c in countries], prefix="country_", cols=2)
+    rows.append([B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")])
+    await q.edit_message_text(tr(context,"select_country"), reply_markup=InlineKeyboardMarkup(rows))
+
+def filter_top_leagues(leagues: list):
+    out = []
+    for item in leagues:
+        lg = item["league"]
+        if lg.get("type") != "League":
+            continue
+        name = lg.get("name","")
+        if any(x in name.lower() for x in ["liga", "league", "serie", "bundesliga", "ligue", "division", "premier", "super"]):
+            label = f"{name} ({lg.get('country') or item.get('country',{}).get('name','')})"
+            out.append((label, lg["id"]))
+    # dedupe
+    seen=set(); filtered=[]
+    for label, lid in out:
+        if lid in seen: continue
+        seen.add(lid); filtered.append((label,lid))
+    return filtered[:30]
+
+def filter_top_leagues(leagues: list):
+    """Filtra ligas principales (fallback si el país no está en ALLOWED_LEAGUES)."""
+    out = []
+    for item in leagues:
+        lg = item["league"]
+        if lg.get("type") != "League":
+            continue
+        name = lg.get("name","")
+        if any(x in name.lower() for x in [
+            "liga", "league", "serie", "bundesliga", "ligue", 
+            "division", "premier", "super"
+        ]):
+            label = f"{name} ({lg.get('country') or item.get('country',{}).get('name','')})"
+            out.append((label, lg["id"]))
+    # deduplicar
+    seen=set(); filtered=[]
+    for label, lid in out:
+        if lid in seen: continue
+        seen.add(lid); filtered.append((label,lid))
+    return filtered[:30]
+
+@restricted
+async def handle_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    country = q.data.replace("country_","")
+
+    status, data = api_get("/leagues", {"country": country})
+    leagues = data.get("response", []) if status == 200 else []
+
+    # ✅ Filtro: si el país está en ALLOWED_LEAGUES → mostrar solo esas ligas
+    if country in ALLOWED_LEAGUES:
+        allowed_ids = set(ALLOWED_LEAGUES[country])
+        leagues = [l for l in leagues if l["league"]["id"] in allowed_ids]
+        options = [(f"{l['league']['name']} ({country})", l["league"]["id"]) for l in leagues]
+    else:
+        # fallback: mostrar ligas principales detectadas
+        options = filter_top_leagues(leagues)
+
+    if not options:
+        rows = [[B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")]]
+        await q.edit_message_text("⚠️ No leagues found for this country.", reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    rows = make_keyboard(options, prefix="league_", cols=2)
+    rows.append([B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")])
+    await q.edit_message_text(tr(context,"select_league"), reply_markup=InlineKeyboardMarkup(rows))
+
+
+# --- Selecciones: país → selección (team) ---
+@restricted
+async def handle_country_national(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    country = q.data.replace("ncountry_","")
+    status, data = api_get("/teams", {"country": country, "type": "National"})
+    items = data.get("response", []) if status==200 else []
+    if not items:
+        rows = [[B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")]]
+        await q.edit_message_text(tr(context,"no_nat_team"), reply_markup=InlineKeyboardMarkup(rows))
+        return
+    teams = [(t["team"]["name"], t["team"]["id"]) for t in items]
+    rows = make_keyboard(teams, prefix="nteam_", cols=2)
+    rows.append([B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")])
+    await q.edit_message_text(tr(context,"select_team"), reply_markup=InlineKeyboardMarkup(rows))
+
+# ----------------- Liga → Equipo → Categoría -----------------
+@restricted
+async def handle_league(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    league_id = q.data.replace("league_","")
+    context.user_data["league_id"] = league_id
+    status, data = api_get("/teams", {"league": league_id, "season": SEASON})
+    teams = data.get("response", []) if status == 200 else []
+    if not teams:
+        await q.edit_message_text(tr(context,"no_teams"),
+                                  reply_markup=InlineKeyboardMarkup(
+                                      [[B(tr(context,"btn_back"), "menu_stats"),
+                                        B(tr(context,"btn_home"), "home")]]))
+        return
+    team_pairs = [(t["team"]["name"], t["team"]["id"]) for t in teams]
+    kb = make_keyboard(team_pairs, prefix="team_", cols=2)
+    kb.append([B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")])
+    await q.edit_message_text(tr(context,"select_team"), reply_markup=InlineKeyboardMarkup(kb))
+
+@restricted
+async def handle_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    if q.data.startswith("nteam_"):
+        team_id = q.data.replace("nteam_","")
+    else:
+        team_id = q.data.replace("team_","")
+    context.user_data["team_id"] = team_id
+    # usar slugs seguros
+    cat_pairs = [(c, slugify(c)) for c in CATS]
+    kb = make_keyboard(cat_pairs, prefix="cat_", cols=2)
+    back_cb = f"league_{context.user_data.get('league_id','')}" if context.user_data.get("league_id") else "menu_stats"
+    kb.append([B(tr(context,"btn_back"), back_cb), B(tr(context,"btn_home"), "home")])
+    await q.edit_message_text(tr(context,"choose_category"), reply_markup=InlineKeyboardMarkup(kb))
+
+# ----------------- Mapping stats (player totals) -----------------
+def map_stat(stats, category_label: str):
+    c = category_label.lower()
+    try:
+        if c == "goals":             return stats["goals"]["total"]
+        if c == "assists":           return stats["goals"]["assists"]
+        if c == "passes":            return stats["passes"]["total"]
+        if c == "shots total":       return stats["shots"]["total"]
+        if c == "shots on target" or c == "soa":  return stats["shots"]["on"]
+        if c == "yellowcards":       return stats["cards"]["yellow"]
+        if c == "redcards":          return stats["cards"]["red"]
+        if c == "fouls":             return stats["fouls"]["committed"]
+        if c == "fouls drawn":       return stats["fouls"]["drawn"]
+        if c == "tackles":           return stats["tackles"]["total"]
+        if c == "saves":             return stats["goals"]["saves"]
+        if c == "offsides":          return stats.get("offsides","-")
+    except Exception:
+        return "-"
+    return "-"
+
+# ---------- TEAM/PLAYER match-stat matching for /fixtures endpoints ----------
+def match_type_matches(stat_type: str, cat_slug: str) -> bool:
+    s = stat_type.lower()
+    c = cat_slug
+    if c in ("shots-on-target","soa"):    return ("on target" in s) or ("on goal" in s)
+    if c == "shots-total":                return "total shots" in s or s == "shots"
+    if c == "passes":                     return "passes" in s
+    if c == "goals":                      return "goals" in s
+    if c == "fouls":                      return "fouls committed" in s or s == "fouls"
+    if c == "fouls-drawn":                return "fouls suffered" in s or "fouls drawn" in s
+    if c == "tackles":                    return "tackles" in s
+    if c == "saves":                      return "saves" in s
+    if c == "yellowcards":                return "yellow cards" in s
+    if c == "redcards":                   return "red cards" in s
+    if c == "offsides":                   return "offsides" in s
+    return False
+
+def safe_int(x):
+    try:
+        # algunos valores vienen como "12%" o None
+        if isinstance(x, str) and x.endswith('%'):
+            x = x[:-1]
+        return int(x)
+    except Exception:
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+# ----------------- CATEGORY → elegir modo (Global / Timeline / Team Timeline) -----------------
+@safe_handler
+@restricted
+async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    cat_slug = q.data.replace("cat_","")   # slug seguro
+    category_label = CAT_SLUG.get(cat_slug, cat_slug)
+    team_id = context.user_data.get("team_id")
+
+    kb = [
+        [B("🌍 Global Totals", f"global_{team_id}_{cat_slug}")],
+        [B("📊 Player Timeline", f"timeline_{team_id}_{cat_slug}")],
+        [B("🏟️ Team Timeline", f"teamtl_{team_id}_{cat_slug}")]
+    ]
+    kb.append([B(tr(context,"btn_back"), f"team_{team_id}"), B(tr(context,"btn_home"), "home")])
+    await q.edit_message_text(f"📈 {category_label} — Choose mode:",
+                              reply_markup=InlineKeyboardMarkup(kb))
+
+# ----------------- GLOBAL (totales por jugador) -----------------
+
+@safe_handler
+@restricted
+async def handle_global(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    _, team_id, cat_slug = q.data.split("_", 2)
+    category_label = CAT_SLUG.get(cat_slug, cat_slug)
+
+    # roster
+    page = 1; players = []
+    while True:
+        status, data = api_get("/players", {"team": team_id, "season": SEASON, "page": page})
+        if status != 200: break
+        chunk = data.get("response", [])
+        if not chunk: break
+        players += chunk
+        if page >= int(data.get("paging",{}).get("total",1)): break
+        page += 1
+
+    if not players:
+        await q.edit_message_text(tr(context,"no_players"),
+                                  reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]]))
+        return
+
+    lines = [f"🌍 *{category_label}* — Season {SEASON}/{SEASON+1}\n"]
+    for p in players[:25]:
+        name = p["player"]["name"]
+        st   = p["statistics"][0]
+        val  = map_stat(st, category_label)
+        lines.append(f"• {name}: `{val}`")
+
+    kb = [[B(tr(context,"btn_back"), f"cat_{cat_slug}"), B(tr(context,"btn_home"), "home")]]
+    await q.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+# ----------------- TIMELINE (jugador por partido) -----------------
+@safe_handler
+@restricted
+async def handle_timeline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    _, team_id, cat_slug = q.data.split("_", 2)
+    category_label = CAT_SLUG.get(cat_slug, cat_slug)
+    kb = [
+        [B("Last 5",  f"tlrange_{team_id}_{cat_slug}_5"), B("Last 10", f"tlrange_{team_id}_{cat_slug}_10")],
+        [B("All season", f"tlrange_{team_id}_{cat_slug}_all")],
+        [B(tr(context,"btn_back"), f"cat_{cat_slug}"), B(tr(context,"btn_home"), "home")]
+    ]
+    await q.edit_message_text(f"📊 {category_label} — Choose range:", reply_markup=InlineKeyboardMarkup(kb))
+
+
+@safe_handler
+@restricted
+async def handle_timeline_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    _, team_id, cat_slug, rng = q.data.split("_", 3)
+    context.user_data["tl_params"] = {"team_id": team_id, "cat_slug": cat_slug, "rng": rng, "homeaway": "all"}
+
+    # Llamamos a la función que dibuja todo de golpe
+    await render_timeline_all(q, context)
+
+def filter_fixtures(fixtures, team_id, homeaway):
+    """Filtra fixtures por local/visitante"""
+    if homeaway == "all":
+        return fixtures
+    out = []
+    for fx in fixtures:
+        home_id = fx["teams"]["home"]["id"]
+        if homeaway == "home" and home_id == int(team_id):
+            out.append(fx)
+        elif homeaway == "away" and home_id != int(team_id):
+            out.append(fx)
+    return out
+
+
+@safe_handler
+async def render_timeline_all(q, context):
+    params = context.user_data.get("tl_params", {})
+    team_id = params.get("team_id")
+    cat_slug = params.get("cat_slug")
+    rng = params.get("rng")
+    homeaway = params.get("homeaway", "all")
+    category_label = CAT_SLUG.get(cat_slug, cat_slug)
+
+    # Fixtures del equipo
+    fx_params = {"team": team_id, "season": SEASON}
+    if rng in ("5", "10"):
+        fx_params = {"team": team_id, "last": int(rng)}
+    st_fx, d_fx = api_get("/fixtures", fx_params)
+    fixtures = d_fx.get("response", []) if st_fx == 200 else []
+    if not fixtures:
+        await q.edit_message_text("⚠️ No matches found.",
+                                  reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]]))
+        return
+
+    # Filtrar home/away
+    fixtures = filter_fixtures(fixtures, team_id, homeaway)
+    fixtures = sorted(fixtures, key=lambda x: x["fixture"]["timestamp"] or 0)
+
+    # Roster del equipo
+    players = []
+    page = 1
+    while True:
+        st, d = api_get("/players", {"team": team_id, "season": SEASON, "page": page})
+        if st != 200: break
+        chunk = d.get("response", [])
+        if not chunk: break
+        players += chunk
+        if page >= int(d.get("paging", {}).get("total", 1)): break
+        page += 1
+
+    if not players:
+        await q.edit_message_text(tr(context,"no_players"),
+                                  reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]]))
+        return
+
+    # 📌 Ahora pedimos stats de jugadores por fixture UNA sola vez
+    fixture_stats = {}
+    for fx in fixtures:
+        fid = fx["fixture"]["id"]
+        st_status, st_data = api_get("/fixtures/players", {"fixture": fid, "team": team_id})
+        if st_status == 200:
+            fixture_stats[fid] = {}
+            for block in st_data.get("response", []):
+                for pl in block.get("players", []):
+                    pid = pl["player"]["id"]
+                    stt = (pl.get("statistics") or [{}])[0]
+                    fixture_stats[fid][pid] = stt
+
+    # Construcción del mensaje
+    lines = [
+        f"📊 *{category_label}* — Player Timeline "
+        f"({'last '+rng if rng in ('5','10') else 'season'})\n"
+        f"Filter: *{homeaway.upper()}*"
+    ]
+
+    for p in players[:25]:  # límite para no saturar el mensaje
+        pid = p["player"]["id"]
+        name = p["player"]["name"]
+        values = []
+        for fx in fixtures:
+            fid = fx["fixture"]["id"]
+            stt = fixture_stats.get(fid, {}).get(pid)
+            if stt:
+                v = map_stat(stt, category_label)
+                values.append(v if v is not None else "-")
+            else:
+                values.append("-")
+
+        nums = [safe_int(v) for v in values if safe_int(v) is not None]
+        avg = round(sum(nums) / len(nums), 2) if nums else 0
+        seq = ", ".join(str(v) for v in values)
+        lines.append(f"(Avg {avg}) {name}: {seq}")
+
+    # Botones
+    kb = [
+        [B("🏠 Home", "tlfilter_home"), B("🚗 Away", "tlfilter_away"), B("🌍 All", "tlfilter_all")],
+        [B(tr(context,"btn_back"), f"cat_{cat_slug}"), B(tr(context,"btn_home"), "home")]
+    ]
+    await q.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+
+def set_tl_filter(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
+    context.user_data["tl_params"]["homeaway"] = mode
+    return render_timeline_all(update.callback_query, context)
+
+@safe_handler
+@restricted
+async def handle_timeline_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    _, player_id, team_id, cat_slug, rng = q.data.split("_", 4)
+    category_label = CAT_SLUG.get(cat_slug, cat_slug)
+
+    # Fixtures del equipo
+    params = {"team": team_id, "season": SEASON}
+    if rng in ("5", "10"):
+        params = {"team": team_id, "last": int(rng)}
+    st_fx, d_fx = api_get("/fixtures", params)
+    fixtures = d_fx.get("response", []) if st_fx == 200 else []
+    if not fixtures:
+        await q.edit_message_text("⚠️ No matches found.",
+                                  reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]]))
+        return
+
+    # Ordenar por fecha (cronológico)
+    fixtures = sorted(fixtures, key=lambda x: x["fixture"]["timestamp"] or 0)
+
+    # 📌 Ahora cargamos stats por fixture UNA sola vez
+    fixture_stats = {}
+    for fx in fixtures:
+        fid = fx["fixture"]["id"]
+        st_status, st_data = api_get("/fixtures/players", {"fixture": fid, "team": team_id})
+        if st_status == 200:
+            fixture_stats[fid] = {}
+            for block in st_data.get("response", []):
+                for pl in block.get("players", []):
+                    pid = pl["player"]["id"]
+                    stt = (pl.get("statistics") or [{}])[0]
+                    fixture_stats[fid][pid] = stt
+
+    # Construir la secuencia de valores SOLO para este jugador
+    values = []
+    for fx in fixtures:
+        fid = fx["fixture"]["id"]
+        stt = fixture_stats.get(fid, {}).get(int(player_id))
+        if stt:
+            v = map_stat(stt, category_label)
+            values.append(v if v is not None else "-")
+        else:
+            values.append("-")
+
+    # Calcular promedio
+    nums = [safe_int(v) for v in values if safe_int(v) is not None]
+    avg = round(sum(nums) / len(nums), 2) if nums else 0
+
+    seq = " ".join(str(v) for v in values)
+    text = (
+        f"📊 *{category_label}* — Player Timeline "
+        f"({'last '+rng if rng in ('5','10') else 'season'})\n"
+        f"Avg: *{avg}*\n"
+        f"`{seq}`"
+    )
+
+    kb = [[B(tr(context,"btn_back"), f"tlrange_{team_id}_{cat_slug}_{rng}"),
+           B(tr(context,"btn_home"), "home")]]
+    await q.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+
+# ----------------- TEAM TIMELINE (estadística del equipo por partido) -----------------
+@safe_handler
+@restricted
+async def handle_team_timeline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    _, team_id, cat_slug = q.data.split("_", 2)
+    category_label = CAT_SLUG.get(cat_slug, cat_slug)
+    kb = [
+        [B("Last 5",  f"teamrange_{team_id}_{cat_slug}_5"), B("Last 10", f"teamrange_{team_id}_{cat_slug}_10")],
+        [B("All season", f"teamrange_{team_id}_{cat_slug}_all")],
+        [B(tr(context,"btn_back"), f"cat_{cat_slug}"), B(tr(context,"btn_home"), "home")]
+    ]
+    await q.edit_message_text(f"🏟️ {category_label} — Team range:", reply_markup=InlineKeyboardMarkup(kb))
+
+@safe_handler
+@restricted
+async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    _, team_id, cat_slug, rng = q.data.split("_", 3)
+    category_label = CAT_SLUG.get(cat_slug, cat_slug)
+
+    params = {"team": team_id, "season": SEASON}
+    if rng in ("5","10"): params = {"team": team_id, "last": int(rng)}
+    st_fx, d_fx = api_get("/fixtures", params)
+    fixtures = d_fx.get("response", []) if st_fx == 200 else []
+    if not fixtures:
+        await q.edit_message_text("⚠️ No matches found.", reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]]))
+        return
+
+    fixtures = sorted(fixtures, key=lambda x: x["fixture"]["timestamp"] or 0)
+
+    values = []
+    for fx in fixtures:
+        fid = fx["fixture"]["id"]
+        st_status, st_data = api_get("/fixtures/statistics", {"fixture": fid, "team": team_id})
+        stats = st_data.get("response", []) if st_status == 200 else []
+        val = "-"
+        if stats:
+            # stats viene en una lista con 'statistics':[{'type':..., 'value':...}, ...]
+            for kv in stats[0].get("statistics", []):
+                if match_type_matches(kv.get("type",""), cat_slug):
+                    val = kv.get("value", "-")
+                    break
+        values.append(val)
+
+    nums = [safe_int(v) for v in values]
+    nums = [n for n in nums if n is not None]
+    avg = round(sum(nums)/len(nums), 2) if nums else 0
+    seq = " ".join(str(v) for v in values)
+
+    text = (
+        f"🏟️ *{category_label}* — Team Timeline ({'last '+rng if rng in ('5','10') else 'season'})\n"
+        f"Avg: *{avg}*\n"
+        f"`{seq}`"
+    )
+    kb = [[B(tr(context,"btn_back"), f"teamtl_{team_id}_{cat_slug}"),
+           B(tr(context,"btn_home"), "home")]]
+    await q.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+# ----------------- /subscribe -----------------
+async def subscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(tr(context, "subscribe_msg"))
+
+
+# ----------------- /fixture -----------------
+def parse_fixture_args(text: str):
+    m = re.search(r"/fixture\s+(.+?)\s+(?:vs|-)\s+(.+)$", text, re.IGNORECASE)
+    return (m.group(1).strip(), m.group(2).strip()) if m else (None, None)
+
+def find_team_id_by_name(name: str):
+    status, data = api_get("/teams", {"search": name})
+    if status == 200 and data.get("response"):
+        item = data["response"][0]
+        return item["team"]["id"], item["team"]["name"]
+    return None, None
+
+async def fixture_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    a, b = parse_fixture_args(text)
+    if not a or not b:
+        await update.message.reply_text(tr(context,"fx_prompt")); return
+    await update.message.reply_text(tr(context,"fx_search"))
+    id1, name1 = find_team_id_by_name(a)
+    id2, name2 = find_team_id_by_name(b)
+    if not id1 or not id2:
+        await update.message.reply_text(tr(context,"fx_no")); return
+    status, data = api_get("/fixtures/headtohead", {"h2h": f"{id1}-{id2}", "last": 5})
+    fixtures = data.get("response", []) if status == 200 else []
+    if not fixtures:
+        await update.message.reply_text(tr(context,"fx_no")); return
+    wins1=wins2=draws=goals1=goals2=0
+    lines=[f"🤝 *{name1}* vs *{name2}* — last {len(fixtures)}\n"]
+    for fx in fixtures:
+        s = fx["score"]; ft = s.get("fulltime") or {}
+        g1 = (ft.get("home") or 0); g2 = (ft.get("away") or 0)
+        goals1 += g1; goals2 += g2
+        if g1>g2: wins1+=1
+        elif g2>g1: wins2+=1
+        else: draws+=1
+        home = fx["teams"]["home"]["name"]; away = fx["teams"]["away"]["name"]
+        lines.append(f"- {home} {g1}-{g2} {away}")
+    lines.append(f"\n🏆 {name1}: {wins1}  | 🤝 Draws: {draws} | {name2}: {wins2}")
+    lines.append(f"⚽ Goals — {name1}: {goals1} | {name2}: {goals2}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+# ----------------- main -----------------
+def main():
+    app = Application.builder().token(TOKEN).build()
+
+    # /start + idioma + menú
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CallbackQueryHandler(set_language, pattern=r"^lang_(en|es)$"))
+    app.add_handler(CallbackQueryHandler(go_home,     pattern=r"^home$"))
+
+    # Navegación /stats
+    app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(CallbackQueryHandler(menu_stats,     pattern=r"^menu_stats$"))
+    app.add_handler(CallbackQueryHandler(handle_region,  pattern=r"^region_.+"))
+    app.add_handler(CallbackQueryHandler(handle_country, pattern=r"^country_.+"))
+    app.add_handler(CallbackQueryHandler(handle_country_national, pattern=r"^ncountry_.+"))
+    app.add_handler(CallbackQueryHandler(handle_league,  pattern=r"^league_\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_team,    pattern=r"^(team_|nteam_)\d+$"))
+
+    # Categoría → modos
+    app.add_handler(CallbackQueryHandler(handle_category, pattern=r"^cat_[a-z0-9\-]+$"))
+    app.add_handler(CallbackQueryHandler(handle_global,   pattern=r"^global_\d+_[a-z0-9\-]+$"))
+    app.add_handler(CallbackQueryHandler(handle_timeline, pattern=r"^timeline_\d+_[a-z0-9\-]+$"))
+    app.add_handler(CallbackQueryHandler(handle_timeline_range, pattern=r"^tlrange_\d+_[a-z0-9\-]+_(5|10|all)$"))
+    app.add_handler(CallbackQueryHandler(handle_timeline_show,  pattern=r"^tlshow_\d+_\d+_[a-z0-9\-]+_(5|10|all)$"))
+
+    # Team timeline
+    app.add_handler(CallbackQueryHandler(handle_team_timeline, pattern=r"^teamtl_\d+_[a-z0-9\-]+$"))
+    app.add_handler(CallbackQueryHandler(handle_team_range,    pattern=r"^teamrange_\d+_[a-z0-9\-]+_(5|10|all)$"))
+
+    # /fixture, /subscribe
+    app.add_handler(CommandHandler("fixture", fixture_cmd))
+    app.add_handler(CommandHandler("subscribe", subscribe_cmd))
+    app.add_handler(CallbackQueryHandler(menu_help,      pattern=r"^menu_help$"))
+    app.add_handler(CallbackQueryHandler(menu_subscribe, pattern=r"^menu_subscribe$"))
+        # Player timeline filtros (home/away/all)
+    app.add_handler(CallbackQueryHandler(lambda u,c: set_tl_filter(u,c,"home"), pattern=r"^tlfilter_home$"))
+    app.add_handler(CallbackQueryHandler(lambda u,c: set_tl_filter(u,c,"away"), pattern=r"^tlfilter_away$"))
+    app.add_handler(CallbackQueryHandler(lambda u,c: set_tl_filter(u,c,"all"),  pattern=r"^tlfilter_all$"))
+
+
+    print("✅ Bot en marcha…")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
