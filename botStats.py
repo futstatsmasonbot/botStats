@@ -14,6 +14,14 @@ API_CACHE = {}
 ALLOWED_USERS = {
     1026764890, # pedirselo a @userinfobot Fran
     6810783940, #Mason
+    685157143, #pichu
+    124308017,
+    7078970245,
+    128874195,
+    5873317278,
+    1072931541,
+    7595371685,
+    1734268379,
 }
 
 def restricted(func):
@@ -596,7 +604,7 @@ async def handle_timeline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     category_label = CAT_SLUG.get(cat_slug, cat_slug)
     kb = [
         [B("Last 5",  f"tlrange_{team_id}_{cat_slug}_5"), B("Last 10", f"tlrange_{team_id}_{cat_slug}_10")],
-        [B("All season", f"tlrange_{team_id}_{cat_slug}_all")],
+        [B("Last 15", f"tlrange_{team_id}_{cat_slug}_15")],
         [B(tr(context,"btn_back"), f"cat_{cat_slug}"), B(tr(context,"btn_home"), "home")]
     ]
     await q.edit_message_text(f"📊 {category_label} — Choose range:", reply_markup=InlineKeyboardMarkup(kb))
@@ -637,7 +645,7 @@ async def render_timeline_all(q, context):
 
     # Fixtures del equipo
     fx_params = {"team": team_id, "season": SEASON}
-    if rng in ("5", "10"):
+    if rng in ("5", "10", "15"):
         fx_params = {"team": team_id, "last": int(rng)}
     st_fx, d_fx = api_get("/fixtures", fx_params)
     fixtures = d_fx.get("response", []) if st_fx == 200 else []
@@ -681,9 +689,9 @@ async def render_timeline_all(q, context):
                     fixture_stats[fid][pid] = stt
 
     # Construcción del mensaje
+    rng_label = f"last {rng}" if rng in ("5", "10", "15") else "season"
     lines = [
-        f"📊 *{category_label}* — Player Timeline "
-        f"({'last '+rng if rng in ('5','10') else 'season'})\n"
+        f"📊 *{category_label}* — Player Timeline ({rng_label})\n"
         f"Filter: *{homeaway.upper()}*"
     ]
 
