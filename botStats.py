@@ -496,6 +496,60 @@ async def handle_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
     back_cb = f"league_{context.user_data.get('league_id','')}" if context.user_data.get("league_id") else "menu_stats"
     kb.append([B(tr(context,"btn_back"), back_cb), B(tr(context,"btn_home"), "home")])
     await q.edit_message_text(tr(context,"choose_category"), reply_markup=InlineKeyboardMarkup(kb))
+    kb = make_keyboard(cat_pairs, prefix="cat_", cols=2)
+    kb.append([B("🏆 Team Ranking", f"ranking_{context.user_data['league_id']}")])
+
+@safe_handler
+@restricted
+async def handle_ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    league_id = q.data.replace("ranking_", "")
+    context.user_data["league_id"] = league_id
+    cat_pairs = [(c, slugify(c)) for c in CATS]
+    kb = make_keyboard(cat_pairs, prefix=f"rankcat_{league_id}_", cols=2)
+    kb.append([B(tr(context,"btn_back"), f"league_{league_id}"), B(tr(context,"btn_home"), "home")])
+    await q.edit_message_text("🏆 Choose ranking category:", reply_markup=InlineKeyboardMarkup(kb))
+
+@safe_handler
+@restricted
+async def handle_ranking_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    _, league_id, cat_slug = q.data.split("_", 2)
+    category_label = CAT_SLUG.get(cat_slug, cat_slug)
+
+    # Obtener todos los equipos de esa liga
+    st, d = api_get("/teams", {"league": league_id, "season": SEASON})
+    teams = d.get("response", []) if st == 200 else []
+
+    ranking = []
+    for t in teams:
+        tid = t["team"]["id"]
+        tname = t["team"]["name"]
+        # Últimos 10 partidos
+        st_fx, d_fx = api_get("/fixtures", {"league": league_id, "season": SEASON, "team": tid, "last": 10})
+        fixtures = d_fx.get("response", []) if st_fx == 200 else []
+        total = 0
+        for fx in fixtures:
+            fid = fx["fixture"]["id"]
+            st_s, d_s = api_get("/fixtures/statistics", {"fixture": fid, "team": tid})
+            stats = d_s.get("response", [])
+            if stats:
+                for kv in stats[0].get("statistics", []):
+                    if match_type_matches(kv["type"], cat_slug):
+                        val = safe_int(kv.get("value"))
+                        if val is not None:
+                            total += val
+        ranking.append((total, tname))
+
+    # Ordenar y quedarnos con top 10
+    ranking.sort(reverse=True)
+    lines = [f"🏆 *Top Teams by {category_label}* (last 10 matches)\n"]
+    for i, (val, name) in enumerate(ranking[:10], start=1):
+        lines.append(f"{i}. {name}: {val}")
+
+    kb = [[B(tr(context,"btn_back"), f"ranking_{league_id}"), B(tr(context,"btn_home"), "home")]]
+    await q.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
 
 # ----------------- Mapping stats (player totals) -----------------
 def map_stat(stats, category_label: str):
@@ -578,7 +632,7 @@ async def handle_global(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # roster
     page = 1; players = []
     while True:
-        status, data = api_get("/players", {"team": team_id, "season": SEASON, "page": page})
+        status, data = api_get("/players", {"team": team_id, "season": SEASON, "league": context.user_data.get("league_id"), "page": page})
         if status != 200: break
         chunk = data.get("response", [])
         if not chunk: break
@@ -650,9 +704,9 @@ async def render_timeline_all(q, context):
     category_label = CAT_SLUG.get(cat_slug, cat_slug)
 
     # Fixtures del equipo
-    fx_params = {"team": team_id, "season": SEASON}
+    fx_params = {"team": team_id, "season": SEASON, "league": context.user_data.get("league_id")}
     if rng in ("5", "10", "15"):
-        fx_params = {"team": team_id, "last": int(rng)}
+        fx_params["last"] = int(rng)
     st_fx, d_fx = api_get("/fixtures", fx_params)
     fixtures = d_fx.get("response", []) if st_fx == 200 else []
     if not fixtures:
@@ -668,7 +722,7 @@ async def render_timeline_all(q, context):
     players = []
     page = 1
     while True:
-        st, d = api_get("/players", {"team": team_id, "season": SEASON, "page": page})
+        st, d = api_get("/players", {"team": team_id, "season": SEASON, "league": context.user_data.get("league_id"), "page": page})
         if st != 200: break
         chunk = d.get("response", [])
         if not chunk: break
@@ -681,7 +735,7 @@ async def render_timeline_all(q, context):
                                   reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]]))
         return
 
-    # 📌 Ahora pedimos stats de jugadores por fixture UNA sola vez
+    # 📌 Stats de jugadores por fixture
     fixture_stats = {}
     for fx in fixtures:
         fid = fx["fixture"]["id"]
@@ -701,21 +755,32 @@ async def render_timeline_all(q, context):
         f"Filter: *{homeaway.upper()}*"
     ]
 
-    for p in players[:25]:  # límite para no saturar el mensaje
+    for p in players[:25]:  # límite para no saturar
         pid = p["player"]["id"]
         name = p["player"]["name"]
         values = []
+
         for fx in fixtures:
             fid = fx["fixture"]["id"]
             stt = fixture_stats.get(fid, {}).get(pid)
+
             if stt:
-                v = map_stat(stt, category_label)
-                values.append(v if v is not None else "-")
+                minutes = stt.get("games", {}).get("minutes", 0)
+                if minutes and minutes > 0:  
+                    # Jugó el partido → si no hizo nada, 0
+                    v = map_stat(stt, category_label)
+                    values.append(v if v is not None else 0)
+                else:
+                    # Estuvo en el equipo pero no jugó → "-"
+                    values.append("-")
             else:
+                # Ni aparece en el fixture → "-"
                 values.append("-")
 
-        nums = [safe_int(v) for v in values if safe_int(v) is not None]
+        # Calcular promedio ignorando los "-" (no jugó)
+        nums = [safe_int(v) for v in values if v != "-" and safe_int(v) is not None]
         avg = round(sum(nums) / len(nums), 2) if nums else 0
+
         seq = ", ".join(str(v) for v in values)
         lines.append(f"(Avg {avg}) {name}: {seq}")
 
@@ -725,6 +790,7 @@ async def render_timeline_all(q, context):
         [B(tr(context,"btn_back"), f"cat_{cat_slug}"), B(tr(context,"btn_home"), "home")]
     ]
     await q.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
 
 
 def set_tl_filter(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
@@ -739,9 +805,10 @@ async def handle_timeline_show(update: Update, context: ContextTypes.DEFAULT_TYP
     category_label = CAT_SLUG.get(cat_slug, cat_slug)
 
     # Fixtures del equipo
-    params = {"team": team_id, "season": SEASON}
-    if rng in ("5", "10"):
-        params = {"team": team_id, "last": int(rng)}
+    params = {"team": team_id, "season": SEASON, "league": context.user_data.get("league_id")}
+    if rng in ("5", "10", "15"):
+        params["last"] = int(rng)
+
     st_fx, d_fx = api_get("/fixtures", params)
     fixtures = d_fx.get("response", []) if st_fx == 200 else []
     if not fixtures:
@@ -752,11 +819,14 @@ async def handle_timeline_show(update: Update, context: ContextTypes.DEFAULT_TYP
     # Ordenar por fecha (cronológico)
     fixtures = sorted(fixtures, key=lambda x: x["fixture"]["timestamp"] or 0)
 
-    # 📌 Ahora cargamos stats por fixture UNA sola vez
+    # 📌 Cargar stats por fixture
     fixture_stats = {}
     for fx in fixtures:
         fid = fx["fixture"]["id"]
-        st_status, st_data = api_get("/fixtures/players", {"fixture": fid, "team": team_id})
+        st_status, st_data = api_get(
+            "/fixtures/players",
+            {"fixture": fid, "team": team_id, "league": context.user_data.get("league_id")}
+        )
         if st_status == 200:
             fixture_stats[fid] = {}
             for block in st_data.get("response", []):
@@ -770,20 +840,28 @@ async def handle_timeline_show(update: Update, context: ContextTypes.DEFAULT_TYP
     for fx in fixtures:
         fid = fx["fixture"]["id"]
         stt = fixture_stats.get(fid, {}).get(int(player_id))
+
         if stt:
-            v = map_stat(stt, category_label)
-            values.append(v if v is not None else "-")
+            minutes = stt.get("games", {}).get("minutes", 0)
+            if minutes and minutes > 0:
+                # Jugó → 0 si no tiene stat
+                v = map_stat(stt, category_label)
+                values.append(v if v is not None else 0)
+            else:
+                # Estuvo convocado pero no jugó
+                values.append("-")
         else:
+            # Ni aparece en el fixture
             values.append("-")
 
-    # Calcular promedio
-    nums = [safe_int(v) for v in values if safe_int(v) is not None]
+    # Calcular promedio ignorando los "-"
+    nums = [safe_int(v) for v in values if v != "-" and safe_int(v) is not None]
     avg = round(sum(nums) / len(nums), 2) if nums else 0
 
     seq = " ".join(str(v) for v in values)
     text = (
         f"📊 *{category_label}* — Player Timeline "
-        f"({'last '+rng if rng in ('5','10') else 'season'})\n"
+        f"({'last '+rng if rng in ('5','10','15') else 'season'})\n"
         f"Avg: *{avg}*\n"
         f"`{seq}`"
     )
@@ -791,6 +869,8 @@ async def handle_timeline_show(update: Update, context: ContextTypes.DEFAULT_TYP
     kb = [[B(tr(context,"btn_back"), f"tlrange_{team_id}_{cat_slug}_{rng}"),
            B(tr(context,"btn_home"), "home")]]
     await q.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+
 
 
 # ----------------- TEAM TIMELINE (estadística del equipo por partido) -----------------
@@ -814,12 +894,16 @@ async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, team_id, cat_slug, rng = q.data.split("_", 3)
     category_label = CAT_SLUG.get(cat_slug, cat_slug)
 
-    params = {"team": team_id, "season": SEASON}
-    if rng in ("5","10"): params = {"team": team_id, "last": int(rng)}
+    # Siempre mantenemos league + season
+    params = {"team": team_id, "season": SEASON, "league": context.user_data.get("league_id")}
+    if rng in ("5", "10", "15"):   # 👈 añadí soporte a 15 también
+        params["last"] = int(rng)
+
     st_fx, d_fx = api_get("/fixtures", params)
     fixtures = d_fx.get("response", []) if st_fx == 200 else []
     if not fixtures:
-        await q.edit_message_text("⚠️ No matches found.", reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]]))
+        await q.edit_message_text("⚠️ No matches found.", 
+                                  reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]]))
         return
 
     fixtures = sorted(fixtures, key=lambda x: x["fixture"]["timestamp"] or 0)
@@ -827,24 +911,31 @@ async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     values = []
     for fx in fixtures:
         fid = fx["fixture"]["id"]
-        st_status, st_data = api_get("/fixtures/statistics", {"fixture": fid, "team": team_id})
+        st_status, st_data = api_get(
+            "/fixtures/statistics",
+            {"fixture": fid, "team": team_id, "league": context.user_data.get("league_id")}
+        )
         stats = st_data.get("response", []) if st_status == 200 else []
-        val = "-"
+        val = "-"  # 👈 por defecto 0 (si jugó pero no hizo nada)
         if stats:
             # stats viene en una lista con 'statistics':[{'type':..., 'value':...}, ...]
+            val = 0
             for kv in stats[0].get("statistics", []):
-                if match_type_matches(kv.get("type",""), cat_slug):
-                    val = kv.get("value", "-")
+                if match_type_matches(kv.get("type", ""), cat_slug):
+                    val = kv.get("value", 0) or 0
                     break
+        else:
+            val = "-"  # 👈 si directamente no hay estadísticas (ej. no jugado)
         values.append(val)
 
-    nums = [safe_int(v) for v in values]
-    nums = [n for n in nums if n is not None]
-    avg = round(sum(nums)/len(nums), 2) if nums else 0
+    # Calcular promedio
+    nums = [safe_int(v) for v in values if isinstance(v, (int, float))]
+    avg = round(sum(nums) / len(nums), 2) if nums else 0
     seq = " ".join(str(v) for v in values)
 
     text = (
-        f"🏟️ *{category_label}* — Team Timeline ({'last '+rng if rng in ('5','10') else 'season'})\n"
+        f"🏟️ *{category_label}* — Team Timeline "
+        f"({'last '+rng if rng in ('5','10','15') else 'season'})\n"
         f"Avg: *{avg}*\n"
         f"`{seq}`"
     )
@@ -937,6 +1028,8 @@ def main():
     app.add_handler(CallbackQueryHandler(lambda u,c: set_tl_filter(u,c,"home"), pattern=r"^tlfilter_home$"))
     app.add_handler(CallbackQueryHandler(lambda u,c: set_tl_filter(u,c,"away"), pattern=r"^tlfilter_away$"))
     app.add_handler(CallbackQueryHandler(lambda u,c: set_tl_filter(u,c,"all"),  pattern=r"^tlfilter_all$"))
+    app.add_handler(CallbackQueryHandler(handle_ranking, pattern=r"^ranking_\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_ranking_category, pattern=r"^rankcat_\d+_[a-z0-9\-]+$"))
 
 
     print("✅ Bot en marcha…")
