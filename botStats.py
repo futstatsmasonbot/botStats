@@ -22,6 +22,10 @@ ALLOWED_USERS = {
     1072931541,
     7595371685,
     1734268379,
+    1454860111,
+    1381006468,
+    1019431393,
+    188209198,
 }
 
 def restricted(func):
@@ -149,7 +153,7 @@ REGIONS = {
 CATS = [
     "Passes", "Tackles", "Fouls", "Fouls Drawn",
     "Yellowcards", "Redcards", "Shots Total", "Shots On Target",
-    "Assists", "Goals", "SOA", "Saves", "Offsides"
+    "Assists", "Goals", "Saves", "Offsides", "Throw-ins", "Goal Kicks"
 ]
 
 # ----------------- I18N -----------------
@@ -509,6 +513,8 @@ def map_stat(stats, category_label: str):
         if c == "tackles":           return stats["tackles"]["total"]
         if c == "saves":             return stats["goals"]["saves"]
         if c == "offsides":          return stats.get("offsides","-")
+        if c == "throw-ins":        return stats.get("throw ins") or stats.get("Throw ins") or "-"
+        if c == "goal-kicks":       return stats.get("goal kicks") or stats.get("Goal kicks") or "-"
     except Exception:
         return "-"
     return "-"
