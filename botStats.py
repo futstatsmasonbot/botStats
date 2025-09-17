@@ -567,8 +567,6 @@ def map_stat(stats, category_label: str):
         if c == "tackles":           return stats["tackles"]["total"]
         if c == "saves":             return stats["goals"]["saves"]
         if c == "offsides":          return stats.get("offsides","-")
-        if c == "throw-ins":        return stats.get("throw ins") or stats.get("Throw ins") or "-"
-        if c == "goal-kicks":       return stats.get("goal kicks") or stats.get("Goal kicks") or "-"
     except Exception:
         return "-"
     return "-"
@@ -588,6 +586,8 @@ def match_type_matches(stat_type: str, cat_slug: str) -> bool:
     if c == "yellowcards":                return "yellow cards" in s
     if c == "redcards":                   return "red cards" in s
     if c == "offsides":                   return "offsides" in s
+    if c == "throw-ins":                  return "throw in" in s
+    if c == "goal-kicks":                 return "goal kick" in s
     return False
 
 def safe_int(x):
@@ -611,12 +611,20 @@ async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     category_label = CAT_SLUG.get(cat_slug, cat_slug)
     team_id = context.user_data.get("team_id")
 
-    kb = [
-        [B("🌍 Global Totals", f"global_{team_id}_{cat_slug}")],
-        [B("📊 Player Timeline", f"timeline_{team_id}_{cat_slug}")],
-        [B("🏟️ Team Timeline", f"teamtl_{team_id}_{cat_slug}")]
-    ]
-    kb.append([B(tr(context,"btn_back"), f"team_{team_id}"), B(tr(context,"btn_home"), "home")])
+    # ⚽ Solo Team Timeline para Throw-ins y Goal Kicks
+    if category_label in ("Throw-ins", "Goal Kicks"):
+        kb = [
+            [B("🏟️ Team Timeline", f"teamtl_{team_id}_{cat_slug}")],
+            [B(tr(context,"btn_back"), f"team_{team_id}"), B(tr(context,"btn_home"), "home")]
+        ]
+    else:
+        kb = [
+            [B("🌍 Global Totals", f"global_{team_id}_{cat_slug}")],
+            [B("📊 Player Timeline", f"timeline_{team_id}_{cat_slug}")],
+            [B("🏟️ Team Timeline", f"teamtl_{team_id}_{cat_slug}")]
+        ]
+        kb.append([B(tr(context,"btn_back"), f"team_{team_id}"), B(tr(context,"btn_home"), "home")])
+
     await q.edit_message_text(f"📈 {category_label} — Choose mode:",
                               reply_markup=InlineKeyboardMarkup(kb))
 
@@ -943,6 +951,29 @@ async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
            B(tr(context,"btn_home"), "home")]]
     await q.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
+@restricted
+async def handle_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    if q.data.startswith("nteam_"):
+        team_id = q.data.replace("nteam_","")
+    else:
+        team_id = q.data.replace("team_","")
+    context.user_data["team_id"] = team_id
+
+    # usar slugs seguros
+    cat_pairs = [(c, slugify(c)) for c in CATS]
+    kb = make_keyboard(cat_pairs, prefix="cat_", cols=2)
+
+    # ✅ botón de ranking general de la liga
+    if context.user_data.get("league_id"):
+        kb.append([B("🏆 Team Ranking", f"ranking_{context.user_data['league_id']}")])
+
+    back_cb = f"league_{context.user_data.get('league_id','')}" if context.user_data.get("league_id") else "menu_stats"
+    kb.append([B(tr(context,"btn_back"), back_cb), B(tr(context,"btn_home"), "home")])
+
+    await q.edit_message_text(tr(context,"choose_category"), reply_markup=InlineKeyboardMarkup(kb))
+
+
 # ----------------- /subscribe -----------------
 async def subscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(tr(context, "subscribe_msg"))
@@ -1012,8 +1043,8 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_category, pattern=r"^cat_[a-z0-9\-]+$"))
     app.add_handler(CallbackQueryHandler(handle_global,   pattern=r"^global_\d+_[a-z0-9\-]+$"))
     app.add_handler(CallbackQueryHandler(handle_timeline, pattern=r"^timeline_\d+_[a-z0-9\-]+$"))
-    app.add_handler(CallbackQueryHandler(handle_timeline_range, pattern=r"^tlrange_\d+_[a-z0-9\-]+_(5|10|all)$"))
-    app.add_handler(CallbackQueryHandler(handle_timeline_show,  pattern=r"^tlshow_\d+_\d+_[a-z0-9\-]+_(5|10|all)$"))
+    app.add_handler(CallbackQueryHandler(handle_timeline_range, pattern=r"^tlrange_\d+_[a-z0-9\-]+_(5|10|15|all)$"))
+    app.add_handler(CallbackQueryHandler(handle_timeline_show,  pattern=r"^tlshow_\d+_\d+_[a-z0-9\-]+_(5|10|15|all)$"))
 
     # Team timeline
     app.add_handler(CallbackQueryHandler(handle_team_timeline, pattern=r"^teamtl_\d+_[a-z0-9\-]+$"))
