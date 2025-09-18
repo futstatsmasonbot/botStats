@@ -13,20 +13,20 @@ API_CACHE = {}
 
 # Usuarios con acceso completo (IDs de Telegram)
 ALLOWED_USERS = {
-    1026764890, # pedirselo a @userinfobot Fran  
-    6810783940, #Mason
-    685157143, 
-    124308017,
-    7078970245,
-    128874195,
-    5873317278,
-    1072931541,
-    7595371685,
-    1734268379,
-    1454860111,
-    1381006468,
-    1019431393,
-    188209198,
+    1026764890: datetime.max, # pedirselo a @userinfobot Fran  
+    6810783940: datetime.max, #Mason
+    685157143: datetime.max, 
+    124308017: datetime.max,
+    7078970245: datetime.max,
+    128874195: datetime.max,
+    5873317278: datetime.max,
+    1072931541: datetime.max,
+    7595371685: datetime.max,
+    1734268379: datetime.max,
+    1454860111: datetime.max,
+    1381006468: datetime.max,
+    1019431393: datetime.max,
+    188209198: datetime.max,
 }
 
 def add_user_subscription(user_id: int, days: int = 30):
