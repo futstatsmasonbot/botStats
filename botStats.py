@@ -903,7 +903,9 @@ async def handle_team_timeline(update: Update, context: ContextTypes.DEFAULT_TYP
     _, team_id, cat_slug = q.data.split("_", 2)
     category_label = CAT_SLUG.get(cat_slug, cat_slug)
     kb = [
-        [B("Last 5",  f"teamrange_{team_id}_{cat_slug}_5"), B("Last 10", f"teamrange_{team_id}_{cat_slug}_10")],
+        [B("Last 5", f"teamrange_{team_id}_{cat_slug}_5"),
+         B("Last 10", f"teamrange_{team_id}_{cat_slug}_10")],
+        [B("Last 15", f"teamrange_{team_id}_{cat_slug}_15")],
         [B("All season", f"teamrange_{team_id}_{cat_slug}_all")],
         [B(tr(context,"btn_back"), f"cat_{cat_slug}"), B(tr(context,"btn_home"), "home")]
     ]
@@ -1062,7 +1064,7 @@ def main():
 
     # Team timeline
     app.add_handler(CallbackQueryHandler(handle_team_timeline, pattern=r"^teamtl_\d+_[a-z0-9\-]+$"))
-    app.add_handler(CallbackQueryHandler(handle_team_range,    pattern=r"^teamrange_\d+_[a-z0-9\-]+_(5|10|all)$"))
+    app.add_handler(CallbackQueryHandler(handle_team_range,    pattern=r"^teamrange_\d+_[a-z0-9\-]+_(5|10|15|all)$"))
 
     # /fixture, /subscribe
     app.add_handler(CommandHandler("fixture", fixture_cmd))
