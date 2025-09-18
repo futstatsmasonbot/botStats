@@ -8,13 +8,14 @@ import httpx
 from functools import wraps
 from telegram import Update
 from telegram.ext import ContextTypes
+from datetime import datetime, timedelta
 API_CACHE = {}
 
 # Usuarios con acceso completo (IDs de Telegram)
 ALLOWED_USERS = {
-    1026764890, # pedirselo a @userinfobot Fran
+    1026764890, # pedirselo a @userinfobot Fran  
     6810783940, #Mason
-    685157143, #pichu
+    685157143, 
     124308017,
     7078970245,
     128874195,
@@ -28,6 +29,13 @@ ALLOWED_USERS = {
     188209198,
 }
 
+def add_user_subscription(user_id: int, days: int = 30):
+    """Añade un usuario con acceso durante X días (por defecto 30)."""
+    ALLOWED_USERS[user_id] = datetime.utcnow() + timedelta(days=days)
+
+# 👉 Aquí añades usuarios cuando quieras
+#add_user_subscription(123456789, days=30)  # Usuario válido durante 30 días
+
 def restricted(func):
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
@@ -37,15 +45,21 @@ def restricted(func):
         elif update.callback_query:
             user_id = update.callback_query.from_user.id
 
-        if user_id not in ALLOWED_USERS:
-            # Usuarios no autorizados → mensaje de suscripción
+        now = datetime.utcnow()
+        expiry = ALLOWED_USERS.get(user_id)
+
+        if not expiry or expiry < now:
+            # ❌ No autorizado o caducado
             if update.message:
-                await update.message.reply_text("🚫 Solo usuarios suscritos pueden usar estadísticas.\n💳 Contacta con @MasonBetAdmin para acceder.")
+                await update.message.reply_text(
+                    "🚫 Solo usuarios suscritos pueden usar estadísticas.\n💳 Contacta con @MasonBetAdmin para acceder."
+                )
             elif update.callback_query:
                 await update.callback_query.answer("🚫 Suscripción requerida", show_alert=True)
-            return  # ❌ Bloquear acceso al handler
+            return
         return await func(update, context, *args, **kwargs)
     return wrapper
+
 
 
 def safe_handler(func):
@@ -153,7 +167,7 @@ REGIONS = {
 CATS = [
     "Passes", "Tackles", "Fouls", "Fouls Drawn",
     "Yellowcards", "Redcards", "Shots Total", "Shots On Target",
-    "Assists", "Goals", "Saves", "Offsides", "Throw-ins", "Goal Kicks"
+    "Assists", "Goals", "Saves", "Offsides", "Corners"
 ]
 
 # ----------------- I18N -----------------
@@ -567,6 +581,7 @@ def map_stat(stats, category_label: str):
         if c == "tackles":           return stats["tackles"]["total"]
         if c == "saves":             return stats["goals"]["saves"]
         if c == "offsides":          return stats.get("offsides","-")
+        if c == "corners":           return stats.get("corners", {}).get("total")
     except Exception:
         return "-"
     return "-"
@@ -586,8 +601,8 @@ def match_type_matches(stat_type: str, cat_slug: str) -> bool:
     if c == "yellowcards":                return "yellow cards" in s
     if c == "redcards":                   return "red cards" in s
     if c == "offsides":                   return "offsides" in s
-    if c == "throw-ins":                  return "throw in" in s
-    if c == "goal-kicks":                 return "goal kick" in s
+    if c == "corners":                    return "corner" in s
+    
     return False
 
 def safe_int(x):
