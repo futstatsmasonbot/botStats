@@ -12,53 +12,53 @@ from datetime import datetime, timedelta
 API_CACHE = {}
 
 # Usuarios con acceso completo (IDs de Telegram)
-ALLOWED_USERS = {
-    1026764890: datetime.max, # pedirselo a @userinfobot Fran  
-    6810783940: datetime.max, #Mason
-    685157143: datetime.max, 
-    124308017: datetime.max,
-    7078970245: datetime.max,
-    128874195: datetime.max,
-    5873317278: datetime.max,
-    1072931541: datetime.max,
-    7595371685: datetime.max,
-    1734268379: datetime.max,
-    1454860111: datetime.max,
-    1381006468: datetime.max,
-    1019431393: datetime.max,
-    188209198: datetime.max,
-}
+#ALLOWED_USERS = {
+    #1026764890: datetime.max, # pedirselo a @userinfobot Fran  
+    #6810783940: datetime.max, #Mason
+    #685157143: datetime.max, 
+    #124308017: datetime.max,
+    #7078970245: datetime.max,
+    #128874195: datetime.max,
+    #5873317278: datetime.max,
+    #1072931541: datetime.max,
+    #7595371685: datetime.max,
+    #1734268379: datetime.max,
+    #1454860111: datetime.max,
+    #1381006468: datetime.max,
+    #1019431393: datetime.max,
+    #188209198: datetime.max,
+#}
 
-def add_user_subscription(user_id: int, days: int = 30):
-    """Añade un usuario con acceso durante X días (por defecto 30)."""
-    ALLOWED_USERS[user_id] = datetime.utcnow() + timedelta(days=days)
+#def add_user_subscription(user_id: int, days: int = 30):
+    #"""Añade un usuario con acceso durante X días (por defecto 30)."""
+    #ALLOWED_USERS[user_id] = datetime.utcnow() + timedelta(days=days)
 
 # 👉 Aquí añades usuarios cuando quieras
 #add_user_subscription(123456789, days=30)  # Usuario válido durante 30 días
 
-def restricted(func):
-    @wraps(func)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        user_id = None
-        if update.message:
-            user_id = update.message.from_user.id
-        elif update.callback_query:
-            user_id = update.callback_query.from_user.id
+#def restricted(func):
+    #@wraps(func)
+    #async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        #user_id = None
+        #if update.message:
+            #user_id = update.message.from_user.id
+        #elif update.callback_query:
+            #user_id = update.callback_query.from_user.id
 
-        now = datetime.utcnow()
-        expiry = ALLOWED_USERS.get(user_id)
+        #now = datetime.utcnow()
+        #expiry = ALLOWED_USERS.get(user_id)
 
-        if not expiry or expiry < now:
+        #if not expiry or expiry < now:
             # ❌ No autorizado o caducado
-            if update.message:
-                await update.message.reply_text(
-                    "🚫 Solo usuarios suscritos pueden usar estadísticas.\n💳 Contacta con @MasonBetAdmin para acceder."
-                )
-            elif update.callback_query:
-                await update.callback_query.answer("🚫 Suscripción requerida", show_alert=True)
-            return
-        return await func(update, context, *args, **kwargs)
-    return wrapper
+            #if update.message:
+                #await update.message.reply_text(
+                    #"🚫 Solo usuarios suscritos pueden usar estadísticas.\n💳 Contacta con @MasonBetAdmin para acceder."
+                #)
+            #elif update.callback_query:
+                #await update.callback_query.answer("🚫 Suscripción requerida", show_alert=True)
+            #return
+        #return await func(update, context, *args, **kwargs)
+    #return wrapper
 
 
 
@@ -361,16 +361,16 @@ async def go_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
                               reply_markup=kb_main(context))
 
 # ----------------- /stats → Región → País → Liga -----------------
-@restricted
+#@restricted
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(tr(context,"select_region"), reply_markup=kb_regions(context))
 
-@restricted
+#@restricted
 async def menu_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     await q.edit_message_text(tr(context,"select_region"), reply_markup=kb_regions(context))
 
-@restricted
+#@restricted
 async def handle_region(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     region = q.data.replace("region_","")
@@ -434,7 +434,7 @@ def filter_top_leagues(leagues: list):
         seen.add(lid); filtered.append((label,lid))
     return filtered[:30]
 
-@restricted
+#@restricted
 async def handle_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     country = q.data.replace("country_","")
@@ -462,7 +462,7 @@ async def handle_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # --- Selecciones: país → selección (team) ---
-@restricted
+#@restricted
 async def handle_country_national(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     country = q.data.replace("ncountry_","")
@@ -478,7 +478,7 @@ async def handle_country_national(update: Update, context: ContextTypes.DEFAULT_
     await q.edit_message_text(tr(context,"select_team"), reply_markup=InlineKeyboardMarkup(rows))
 
 # ----------------- Liga → Equipo → Categoría -----------------
-@restricted
+#@restricted
 async def handle_league(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     league_id = q.data.replace("league_","")
@@ -496,7 +496,7 @@ async def handle_league(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb.append([B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")])
     await q.edit_message_text(tr(context,"select_team"), reply_markup=InlineKeyboardMarkup(kb))
 
-@restricted
+#@restricted
 async def handle_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     if q.data.startswith("nteam_"):
@@ -514,7 +514,7 @@ async def handle_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb.append([B("🏆 Team Ranking", f"ranking_{context.user_data['league_id']}")])
 
 @safe_handler
-@restricted
+#@restricted
 async def handle_ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     league_id = q.data.replace("ranking_", "")
@@ -525,7 +525,7 @@ async def handle_ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text("🏆 Choose ranking category:", reply_markup=InlineKeyboardMarkup(kb))
 
 @safe_handler
-@restricted
+#@restricted
 async def handle_ranking_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, league_id, cat_slug = q.data.split("_", 2)
@@ -581,7 +581,6 @@ def map_stat(stats, category_label: str):
         if c == "tackles":           return stats["tackles"]["total"]
         if c == "saves":             return stats["goals"]["saves"]
         if c == "offsides":          return stats.get("offsides","-")
-        if c == "corners":           return stats.get("corners", {}).get("total")
     except Exception:
         return "-"
     return "-"
@@ -619,7 +618,7 @@ def safe_int(x):
 
 # ----------------- CATEGORY → elegir modo (Global / Timeline / Team Timeline) -----------------
 @safe_handler
-@restricted
+#@restricted
 async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     cat_slug = q.data.replace("cat_","")   # slug seguro
@@ -627,7 +626,7 @@ async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     team_id = context.user_data.get("team_id")
 
     # ⚽ Solo Team Timeline para Throw-ins y Goal Kicks
-    if category_label in ("Throw-ins", "Goal Kicks"):
+    if category_label in ("Corners",):
         kb = [
             [B("🏟️ Team Timeline", f"teamtl_{team_id}_{cat_slug}")],
             [B(tr(context,"btn_back"), f"team_{team_id}"), B(tr(context,"btn_home"), "home")]
@@ -646,7 +645,7 @@ async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ----------------- GLOBAL (totales por jugador) -----------------
 
 @safe_handler
-@restricted
+#@restricted
 async def handle_global(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, team_id, cat_slug = q.data.split("_", 2)
@@ -680,7 +679,7 @@ async def handle_global(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ----------------- TIMELINE (jugador por partido) -----------------
 @safe_handler
-@restricted
+#@restricted
 async def handle_timeline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, team_id, cat_slug = q.data.split("_", 2)
@@ -694,7 +693,7 @@ async def handle_timeline(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @safe_handler
-@restricted
+#@restricted
 async def handle_timeline_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, team_id, cat_slug, rng = q.data.split("_", 3)
@@ -821,7 +820,7 @@ def set_tl_filter(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str)
     return render_timeline_all(update.callback_query, context)
 
 @safe_handler
-@restricted
+#@restricted
 async def handle_timeline_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, player_id, team_id, cat_slug, rng = q.data.split("_", 4)
@@ -898,7 +897,7 @@ async def handle_timeline_show(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # ----------------- TEAM TIMELINE (estadística del equipo por partido) -----------------
 @safe_handler
-@restricted
+#@restricted
 async def handle_team_timeline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, team_id, cat_slug = q.data.split("_", 2)
@@ -911,7 +910,7 @@ async def handle_team_timeline(update: Update, context: ContextTypes.DEFAULT_TYP
     await q.edit_message_text(f"🏟️ {category_label} — Team range:", reply_markup=InlineKeyboardMarkup(kb))
 
 @safe_handler
-@restricted
+#@restricted
 async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, team_id, cat_slug, rng = q.data.split("_", 3)
@@ -966,7 +965,7 @@ async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
            B(tr(context,"btn_home"), "home")]]
     await q.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
-@restricted
+#@restricted
 async def handle_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     if q.data.startswith("nteam_"):
