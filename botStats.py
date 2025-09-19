@@ -976,26 +976,42 @@ async def handle_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text(tr(context,"choose_category"), reply_markup=InlineKeyboardMarkup(kb))
 
 #@restricted
+@safe_handler
 async def cmd_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("⚠️ Usa `/player nombre`.", parse_mode="Markdown")
         return
 
     name = " ".join(context.args).lower()
+
+    # 1️⃣ Intentar primero con season actual
     st, d = api_get("/players", {"search": name, "season": SEASON})
-    if st != 200 or not d.get("response"):
-        await update.message.reply_text("❌ No players found.")
+    players = d.get("response", []) if st == 200 else []
+
+    # 2️⃣ Si no hay → buscar sin season
+    if not players:
+        st, d = api_get("/players", {"search": name})
+        raw_players = d.get("response", []) if st == 200 else []
+
+        # filtrar los que tengan stats en SEASON actual
+        players = []
+        for p in raw_players:
+            stats = p.get("statistics", [])
+            if any(s.get("league", {}).get("season") == SEASON for s in stats):
+                players.append(p)
+
+    # 3️⃣ Si aun así nada → mensaje de error
+    if not players:
+        await update.message.reply_text(f"❌ No players found in season {SEASON}.")
         return
 
-    players = d["response"]
-
-    # Si hay más de uno
+    # 4️⃣ Múltiples resultados
     if len(players) > 1:
         kb = []
         for p in players:
             pid = p["player"]["id"]
             pname = p["player"]["name"]
-            tname = p["statistics"][0]["team"]["name"]
+            tname = p.get("statistics", [{}])[0].get("team", {}).get("name", "Unknown")
             kb.append([B(f"{pname} ({tname})", f"playerpick_{pid}")])
         await update.message.reply_text(
             f"👀 Multiple players found matching '{name}'. Please select the correct player:",
@@ -1003,10 +1019,11 @@ async def cmd_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Si solo hay 1 → ir directamente a selección de liga
+    # 5️⃣ Si hay solo uno
     player = players[0]
     context.user_data["player_name"] = player["player"]["name"]
     await ask_league(update, context, player["player"]["id"], player["player"]["name"])
+
 
 async def ask_league(update, context, player_id, player_name):
     st, d = api_get("/players", {"id": player_id, "season": SEASON})
