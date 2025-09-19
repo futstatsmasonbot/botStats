@@ -918,9 +918,9 @@ async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, team_id, cat_slug, rng = q.data.split("_", 3)
     category_label = CAT_SLUG.get(cat_slug, cat_slug)
 
-    # Siempre mantenemos league + season
+    # 1️⃣ Obtener fixtures filtrados por liga+season
     params = {"team": team_id, "season": SEASON, "league": context.user_data.get("league_id")}
-    if rng in ("5", "10", "15"):   # 👈 añadí soporte a 15 también
+    if rng in ("5", "10", "15"):
         params["last"] = int(rng)
 
     st_fx, d_fx = api_get("/fixtures", params)
@@ -932,27 +932,23 @@ async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     fixtures = sorted(fixtures, key=lambda x: x["fixture"]["timestamp"] or 0)
 
+    # 2️⃣ Estadísticas por fixture (sin league aquí)
     values = []
     for fx in fixtures:
         fid = fx["fixture"]["id"]
-        st_status, st_data = api_get(
-            "/fixtures/statistics",
-            {"fixture": fid, "team": team_id, "league": context.user_data.get("league_id")}
-        )
+        st_status, st_data = api_get("/fixtures/statistics", {"fixture": fid, "team": team_id})
         stats = st_data.get("response", []) if st_status == 200 else []
-        val = "-"  # 👈 por defecto 0 (si jugó pero no hizo nada)
+
+        val = "-"
         if stats:
-            # stats viene en una lista con 'statistics':[{'type':..., 'value':...}, ...]
             val = 0
             for kv in stats[0].get("statistics", []):
                 if match_type_matches(kv.get("type", ""), cat_slug):
                     val = kv.get("value", 0) or 0
                     break
-        else:
-            val = "-"  # 👈 si directamente no hay estadísticas (ej. no jugado)
         values.append(val)
 
-    # Calcular promedio
+    # 3️⃣ Promedio
     nums = [safe_int(v) for v in values if isinstance(v, (int, float))]
     avg = round(sum(nums) / len(nums), 2) if nums else 0
     seq = " ".join(str(v) for v in values)
@@ -966,6 +962,7 @@ async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[B(tr(context,"btn_back"), f"teamtl_{team_id}_{cat_slug}"),
            B(tr(context,"btn_home"), "home")]]
     await q.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
 
 #@restricted
 async def handle_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
