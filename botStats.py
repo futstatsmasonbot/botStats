@@ -975,6 +975,112 @@ async def handle_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await q.edit_message_text(tr(context,"choose_category"), reply_markup=InlineKeyboardMarkup(kb))
 
+#@restricted
+async def cmd_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("⚠️ Usa `/player nombre`.", parse_mode="Markdown")
+        return
+
+    name = " ".join(context.args).lower()
+    st, d = api_get("/players", {"search": name, "season": SEASON})
+    if st != 200 or not d.get("response"):
+        await update.message.reply_text("❌ No players found.")
+        return
+
+    players = d["response"]
+
+    # Si hay más de uno
+    if len(players) > 1:
+        kb = []
+        for p in players:
+            pid = p["player"]["id"]
+            pname = p["player"]["name"]
+            tname = p["statistics"][0]["team"]["name"]
+            kb.append([B(f"{pname} ({tname})", f"playerpick_{pid}")])
+        await update.message.reply_text(
+            f"👀 Multiple players found matching '{name}'. Please select the correct player:",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return
+
+    # Si solo hay 1 → ir directamente a selección de liga
+    player = players[0]
+    await ask_league(update, context, player["player"]["id"], player["player"]["name"])
+
+async def ask_league(update, context, player_id, player_name):
+    st, d = api_get("/players", {"id": player_id, "season": SEASON})
+    if st != 200: return
+
+    leagues = []
+    seen = set()
+    for s in d.get("response", []):
+        lg = s["statistics"][0]["league"]
+        if lg["id"] not in seen:
+            seen.add(lg["id"])
+            leagues.append(lg)
+
+    kb = [[B(f"{player_name} ({lg['name']})", f"playerleague_{player_id}_{lg['id']}")] for lg in leagues]
+    kb.append([B("⬅️ Back", "back_playersearch")])
+
+    q = update.callback_query or update.message
+    await q.reply_text(f"📋 Select a league for {player_name}:", reply_markup=InlineKeyboardMarkup(kb))
+
+async def handle_player_league(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    _, player_id, league_id = q.data.split("_", 2)
+
+    player_name = "Player"
+    context.user_data["player_id"] = int(player_id)
+    context.user_data["league_id"] = int(league_id)
+
+    kb = []
+    for cat_slug, label in CAT_SLUG.items():
+        kb.append([B(label, f"playerstat_{player_id}_{league_id}_{cat_slug}")])
+    kb.append([B("📕 Exit & Show All Leagues", "exit_player")])
+
+    await q.edit_message_text(f"📊 Select a stat type for {player_name} in {league_id}:",
+                              reply_markup=InlineKeyboardMarkup(kb))
+
+async def handle_player_stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    _, player_id, league_id, cat_slug = q.data.split("_", 3)
+
+    category_label = CAT_SLUG.get(cat_slug, cat_slug)
+
+    # Obtener últimos partidos
+    params = {"player": player_id, "season": SEASON, "league": league_id}
+    st, d = api_get("/fixtures/players", params)
+    if st != 200 or not d.get("response"):
+        await q.edit_message_text("⚠️ No data found.")
+        return
+
+    all_vals, home_vals, away_vals = [], [], []
+
+    for block in d["response"]:
+        for pl in block["players"]:
+            if pl["player"]["id"] == int(player_id):
+                stt = (pl.get("statistics") or [{}])[0]
+                v = map_stat(stt, category_label) or 0
+                venue = block["team"]["id"]  # o block["fixture"]["venue"]
+
+                all_vals.append(v)
+                if block["team"]["id"] == block["fixture"]["home"]["id"]:
+                    home_vals.append(v)
+                else:
+                    away_vals.append(v)
+
+    def avg(vals): return round(sum(vals)/len(vals), 2) if vals else 0
+
+    text = (
+        f"📊 {category_label} for *{player_id}*\n\n"
+        f"👤 Overall (Avg {avg(all_vals)}): {', '.join(map(str, all_vals))}\n"
+        f"🏠 Home (Avg {avg(home_vals)}): {', '.join(map(str, home_vals))}\n"
+        f"🚗 Away (Avg {avg(away_vals)}): {', '.join(map(str, away_vals))}\n"
+    )
+    await q.edit_message_text(text, parse_mode="Markdown")
+
+
+
 
 # ----------------- /subscribe -----------------
 async def subscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
