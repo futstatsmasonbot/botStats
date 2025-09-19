@@ -740,25 +740,10 @@ async def render_timeline_all(q, context):
     fixtures = filter_fixtures(fixtures, team_id, homeaway)
     fixtures = sorted(fixtures, key=lambda x: x["fixture"]["timestamp"] or 0)
 
-    # Roster del equipo
-    players = []
-    page = 1
-    while True:
-        st, d = api_get("/players", {"team": team_id, "season": SEASON, "league": context.user_data.get("league_id"), "page": page})
-        if st != 200: break
-        chunk = d.get("response", [])
-        if not chunk: break
-        players += chunk
-        if page >= int(d.get("paging", {}).get("total", 1)): break
-        page += 1
+    # 📌 Roster REAL sacado de /fixtures/players
+    players = {}        # {player_id: {"id":..., "name":...}}
+    fixture_stats = {}  # {fixture_id: {player_id: stats}}
 
-    if not players:
-        await q.edit_message_text(tr(context,"no_players"),
-                                  reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]]))
-        return
-
-    # 📌 Stats de jugadores por fixture
-    fixture_stats = {}
     for fx in fixtures:
         fid = fx["fixture"]["id"]
         st_status, st_data = api_get("/fixtures/players", {"fixture": fid, "team": team_id})
@@ -767,8 +752,16 @@ async def render_timeline_all(q, context):
             for block in st_data.get("response", []):
                 for pl in block.get("players", []):
                     pid = pl["player"]["id"]
+                    pname = pl["player"]["name"]
                     stt = (pl.get("statistics") or [{}])[0]
-                    fixture_stats[fid][pid] = stt
+
+                    players[pid] = {"id": pid, "name": pname}   # guardamos jugador
+                    fixture_stats[fid][pid] = stt               # guardamos stats
+
+    if not players:
+        await q.edit_message_text(tr(context,"no_players"),
+                                  reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]]))
+        return
 
     # Construcción del mensaje
     rng_label = f"last {rng}" if rng in ("5", "10", "15") else "season"
@@ -777,9 +770,9 @@ async def render_timeline_all(q, context):
         f"Filter: *{homeaway.upper()}*"
     ]
 
-    for p in players[:25]:  # límite para no saturar
-        pid = p["player"]["id"]
-        name = p["player"]["name"]
+    for p in list(players.values())[:25]:  # límite para no saturar
+        pid = p["id"]
+        name = p["name"]
         values = []
 
         for fx in fixtures:
@@ -789,17 +782,13 @@ async def render_timeline_all(q, context):
             if stt:
                 minutes = stt.get("games", {}).get("minutes", 0)
                 if minutes and minutes > 0:  
-                    # Jugó el partido → si no hizo nada, 0
                     v = map_stat(stt, category_label)
                     values.append(v if v is not None else 0)
                 else:
-                    # Estuvo en el equipo pero no jugó → "-"
                     values.append("-")
             else:
-                # Ni aparece en el fixture → "-"
                 values.append("-")
 
-        # Calcular promedio ignorando los "-" (no jugó)
         nums = [safe_int(v) for v in values if v != "-" and safe_int(v) is not None]
         avg = round(sum(nums) / len(nums), 2) if nums else 0
 
