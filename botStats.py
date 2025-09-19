@@ -1005,11 +1005,14 @@ async def cmd_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Si solo hay 1 → ir directamente a selección de liga
     player = players[0]
+    context.user_data["player_name"] = player["player"]["name"]
     await ask_league(update, context, player["player"]["id"], player["player"]["name"])
 
 async def ask_league(update, context, player_id, player_name):
     st, d = api_get("/players", {"id": player_id, "season": SEASON})
     if st != 200: return
+
+    context.user_data["player_name"] = player_name
 
     leagues = []
     seen = set()
@@ -1029,7 +1032,7 @@ async def handle_player_league(update: Update, context: ContextTypes.DEFAULT_TYP
     q = update.callback_query; await q.answer()
     _, player_id, league_id = q.data.split("_", 2)
 
-    player_name = "Player"
+    player_name = context.user_data.get("player_name", "Player")
     context.user_data["player_id"] = int(player_id)
     context.user_data["league_id"] = int(league_id)
 
@@ -1038,16 +1041,20 @@ async def handle_player_league(update: Update, context: ContextTypes.DEFAULT_TYP
         kb.append([B(label, f"playerstat_{player_id}_{league_id}_{cat_slug}")])
     kb.append([B("📕 Exit & Show All Leagues", "exit_player")])
 
-    await q.edit_message_text(f"📊 Select a stat type for {player_name} in {league_id}:",
-                              reply_markup=InlineKeyboardMarkup(kb))
+    await q.edit_message_text(
+        f"📊 Select a stat type for *{player_name}* in {league_id}:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+
 
 async def handle_player_stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, player_id, league_id, cat_slug = q.data.split("_", 3)
 
     category_label = CAT_SLUG.get(cat_slug, cat_slug)
+    player_name = context.user_data.get("player_name", f"Player {player_id}")
 
-    # Obtener últimos partidos
     params = {"player": player_id, "season": SEASON, "league": league_id}
     st, d = api_get("/fixtures/players", params)
     if st != 200 or not d.get("response"):
@@ -1061,26 +1068,31 @@ async def handle_player_stat(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if pl["player"]["id"] == int(player_id):
                 stt = (pl.get("statistics") or [{}])[0]
                 v = map_stat(stt, category_label) or 0
-                venue = block["team"]["id"]  # o block["fixture"]["venue"]
-
-                all_vals.append(v)
-                if block["team"]["id"] == block["fixture"]["home"]["id"]:
+                # 🔧 venue check (mejor usar block["team"]["id"])
+                if block["team"]["id"] == block["fixture"]["teams"]["home"]["id"]:
                     home_vals.append(v)
                 else:
                     away_vals.append(v)
+                all_vals.append(v)
 
     def avg(vals): return round(sum(vals)/len(vals), 2) if vals else 0
 
     text = (
-        f"📊 {category_label} for *{player_id}*\n\n"
+        f"📊 {category_label} for *{player_name}*\n\n"
         f"👤 Overall (Avg {avg(all_vals)}): {', '.join(map(str, all_vals))}\n"
         f"🏠 Home (Avg {avg(home_vals)}): {', '.join(map(str, home_vals))}\n"
         f"🚗 Away (Avg {avg(away_vals)}): {', '.join(map(str, away_vals))}\n"
     )
     await q.edit_message_text(text, parse_mode="Markdown")
 
-
-
+async def handle_player_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    _, player_id = q.data.split("_", 1)
+    st, d = api_get("/players", {"id": player_id, "season": SEASON})
+    if st != 200 or not d.get("response"): return
+    player = d["response"][0]["player"]
+    context.user_data["player_name"] = player["name"]
+    await ask_league(update, context, player_id, player["name"])
 
 # ----------------- /subscribe -----------------
 async def subscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1169,6 +1181,11 @@ def main():
     app.add_handler(CallbackQueryHandler(lambda u,c: set_tl_filter(u,c,"all"),  pattern=r"^tlfilter_all$"))
     app.add_handler(CallbackQueryHandler(handle_ranking, pattern=r"^ranking_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_ranking_category, pattern=r"^rankcat_\d+_[a-z0-9\-]+$"))
+
+    app.add_handler(CommandHandler("player", cmd_player))
+    app.add_handler(CallbackQueryHandler(handle_player_league, pattern=r"^playerleague_\d+_\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_player_stat, pattern=r"^playerstat_\d+_\d+_[a-z0-9\-]+$"))
+    app.add_handler(CallbackQueryHandler(handle_player_pick, pattern=r"^playerpick_\d+$"))
 
 
     print("✅ Bot en marcha…")
