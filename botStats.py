@@ -985,7 +985,7 @@ async def cmd_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     name = " ".join(context.args).lower()
 
-    # 1️⃣ Buscar jugador por nombre sin season
+    # 1️⃣ Buscar jugador por nombre (sin season)
     st, d = api_get("/players/profiles", {"search": name})
     if st != 200 or not d.get("response"):
         await update.message.reply_text(f"❌ No players found matching '{name}'.")
@@ -993,103 +993,50 @@ async def cmd_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     players = d["response"]
 
-    # Si hay varios → que elija
+    # 2️⃣ Si hay varios → que elija
     if len(players) > 1:
         kb = []
         for p in players:
             pid = p["player"]["id"]
             pname = p["player"]["name"]
-            # puede que no siempre venga el team
-            tname = p.get("team", {}).get("name", "Unknown Team")
+            tname = p.get("team", {}).get("name", "Unknown Team")  # puede no estar
             kb.append([B(f"{pname} ({tname})", f"playerpick_{pid}")])
+
         await update.message.reply_text(
             f"👀 Multiple players found matching '{name}'. Please select the correct player:",
             reply_markup=InlineKeyboardMarkup(kb)
         )
         return
 
-    # Si solo hay 1
+    # 3️⃣ Si solo hay 1 → Simular "pick" directo
     player = players[0]
     context.user_data["player_name"] = player["player"]["name"]
-    await ask_league(update, context, player["player"]["id"], player["player"]["name"])
+
+    # Reutilizamos la misma lógica de handle_player_pick
+    fake_query = type("obj", (), {"data": f"playerpick_{player['player']['id']}", "answer": (lambda *a, **k: None)})
+    await handle_player_pick(update, context)  # 👈 así siempre pasa por el mismo flujo
 
 
-async def handle_player_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    _, player_id = q.data.split("_", 1)
-
-    # 2️⃣ Consultar ligas/temporadas disponibles
-    st, d = api_get("/players/seasons", {"id": player_id})
-    if st != 200 or not d.get("response"):
-        await q.edit_message_text("⚠️ No seasons available for this player.")
-        return
-
-    # Guardar el nombre
-    st2, d2 = api_get("/players/profiles", {"id": player_id})
-    pname = "Player"
-    if st2 == 200 and d2.get("response"):
-        pname = d2["response"][0]["player"]["name"]
-    context.user_data["player_name"] = pname
-
-    # Filtrar si está en la temporada actual
-    leagues = []
-    for lg in d["response"]:
-        if lg.get("season") == SEASON:  # solo temporada actual
-            leagues.append(lg)
-
-    if not leagues:
-        await q.edit_message_text(f"❌ {pname} has no stats in season {SEASON}.")
-        return
-
-    kb = [[B(f"{pname} ({lg['league']['name']})", f"playerleague_{player_id}_{lg['league']['id']}")] for lg in leagues]
-    kb.append([B("⬅️ Back", "back_playersearch")])
-
-    await q.edit_message_text(f"📋 Select a league for {pname}:", reply_markup=InlineKeyboardMarkup(kb))
-
-
-
-async def ask_league(update, context, player_id, player_name):
-    st, d = api_get("/players", {"id": player_id, "season": SEASON})
-    if st != 200: return
-
-    context.user_data["player_name"] = player_name
-
-    leagues = []
-    seen = set()
-    for s in d.get("response", []):
-        lg = s["statistics"][0]["league"]
-        if lg["id"] not in seen:
-            seen.add(lg["id"])
-            leagues.append(lg)
-
-    kb = [[B(f"{player_name} ({lg['name']})", f"playerleague_{player_id}_{lg['id']}")] for lg in leagues]
-    kb.append([B("⬅️ Back", "back_playersearch")])
-
-    q = update.callback_query or update.message
-    await q.reply_text(f"📋 Select a league for {player_name}:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def handle_player_league(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    _, player_id, league_id = q.data.split("_", 2)
+    _, player_id, league_id, season = q.data.split("_", 3)
 
     player_name = context.user_data.get("player_name", "Player")
     context.user_data["player_id"] = int(player_id)
     context.user_data["league_id"] = int(league_id)
+    context.user_data["season"] = int(season)
 
-    # ✅ Obtener nombre de la liga (solo una vez)
     st, d = api_get("/leagues", {"id": league_id})
-    if st == 200 and d.get("response"):
-        league_name = d["response"][0]["league"]["name"]
-    else:
-        league_name = f"League {league_id}"
+    league_name = d["response"][0]["league"]["name"] if st == 200 and d.get("response") else f"League {league_id}"
 
     kb = []
     for cat_slug, label in CAT_SLUG.items():
-        kb.append([B(label, f"playerstat_{player_id}_{league_id}_{cat_slug}")])
+        kb.append([B(label, f"playerstat_{player_id}_{league_id}_{season}_{cat_slug}")])
     kb.append([B("📕 Exit & Show All Leagues", "exit_player")])
 
     await q.edit_message_text(
-        f"📊 Select a stat type for *{player_name}* in {league_name}:",
+        f"📊 Select a stat type for *{player_name}* in {league_name} ({season}):",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb)
     )
@@ -1097,24 +1044,23 @@ async def handle_player_league(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def handle_player_stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    _, player_id, league_id, cat_slug = q.data.split("_", 3)
+    _, player_id, league_id, season, cat_slug = q.data.split("_", 4)
 
     category_label = CAT_SLUG.get(cat_slug, cat_slug)
     player_name = context.user_data.get("player_name", f"Player {player_id}")
 
-    params = {"player": player_id, "season": SEASON, "league": league_id}
+    params = {"player": player_id, "season": season, "league": league_id}
     st, d = api_get("/fixtures/players", params)
     if st != 200 or not d.get("response"):
         await q.edit_message_text("⚠️ No data found.")
         return
-
+    
     all_vals, home_vals, away_vals = [], [], []
 
     for block in d["response"]:
         team_id = block["team"]["id"]
         fixture_id = block["fixture"]["id"]
 
-        # 🔎 Buscar fixture completo (para saber si era Home/Away)
         st_fx, d_fx = api_get("/fixtures", {"id": fixture_id})
         if st_fx == 200 and d_fx.get("response"):
             home_id = d_fx["response"][0]["teams"]["home"]["id"]
@@ -1125,31 +1071,26 @@ async def handle_player_stat(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if pl["player"]["id"] == int(player_id):
                 stt = (pl.get("statistics") or [{}])[0]
                 minutes = stt.get("games", {}).get("minutes", 0)
-
-                # ⚠️ Solo consideramos partidos jugados (>0 min)
-                if not minutes or minutes == 0:
+                if not minutes:  # ignorar partidos sin jugar
                     continue
 
                 v = map_stat(stt, category_label) or 0
-
                 if home_id and team_id == home_id:
                     home_vals.append(v)
                 else:
                     away_vals.append(v)
-
                 all_vals.append(v)
 
-    def avg(vals): 
-        return round(sum(vals)/len(vals), 2) if vals else 0
+    def avg(vals): return round(sum(vals)/len(vals), 2) if vals else 0
 
     text = (
         f"📊 {category_label} for *{player_name}*\n\n"
-        f"👤 Overall (Avg {avg(all_vals)} per match): {', '.join(map(str, all_vals)) or '-'}\n"
-        f"🏠 Home (Avg {avg(home_vals)} per match): {', '.join(map(str, home_vals)) or '-'}\n"
-        f"🚗 Away (Avg {avg(away_vals)} per match): {', '.join(map(str, away_vals)) or '-'}\n"
+        f"👤 Overall (Avg {avg(all_vals)}): {', '.join(map(str, all_vals)) or '-'}\n"
+        f"🏠 Home (Avg {avg(home_vals)}): {', '.join(map(str, home_vals)) or '-'}\n"
+        f"🚗 Away (Avg {avg(away_vals)}): {', '.join(map(str, away_vals)) or '-'}\n"
     )
-
     await q.edit_message_text(text, parse_mode="Markdown")
+
 
 
 async def handle_player_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
