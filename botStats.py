@@ -1076,13 +1076,20 @@ async def handle_player_league(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data["player_id"] = int(player_id)
     context.user_data["league_id"] = int(league_id)
 
+    # ✅ Obtener nombre de la liga (solo una vez)
+    st, d = api_get("/leagues", {"id": league_id})
+    if st == 200 and d.get("response"):
+        league_name = d["response"][0]["league"]["name"]
+    else:
+        league_name = f"League {league_id}"
+
     kb = []
     for cat_slug, label in CAT_SLUG.items():
         kb.append([B(label, f"playerstat_{player_id}_{league_id}_{cat_slug}")])
     kb.append([B("📕 Exit & Show All Leagues", "exit_player")])
 
     await q.edit_message_text(
-        f"📊 Select a stat type for *{player_name}* in {league_id}:",
+        f"📊 Select a stat type for *{player_name}* in {league_name}:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb)
     )
@@ -1104,35 +1111,86 @@ async def handle_player_stat(update: Update, context: ContextTypes.DEFAULT_TYPE)
     all_vals, home_vals, away_vals = [], [], []
 
     for block in d["response"]:
+        team_id = block["team"]["id"]
+        fixture_id = block["fixture"]["id"]
+
+        # 🔎 Buscar fixture completo (para saber si era Home/Away)
+        st_fx, d_fx = api_get("/fixtures", {"id": fixture_id})
+        if st_fx == 200 and d_fx.get("response"):
+            home_id = d_fx["response"][0]["teams"]["home"]["id"]
+        else:
+            home_id = None
+
         for pl in block["players"]:
             if pl["player"]["id"] == int(player_id):
                 stt = (pl.get("statistics") or [{}])[0]
+                minutes = stt.get("games", {}).get("minutes", 0)
+
+                # ⚠️ Solo consideramos partidos jugados (>0 min)
+                if not minutes or minutes == 0:
+                    continue
+
                 v = map_stat(stt, category_label) or 0
-                # 🔧 venue check (mejor usar block["team"]["id"])
-                if block["team"]["id"] == block["fixture"]["teams"]["home"]["id"]:
+
+                if home_id and team_id == home_id:
                     home_vals.append(v)
                 else:
                     away_vals.append(v)
+
                 all_vals.append(v)
 
-    def avg(vals): return round(sum(vals)/len(vals), 2) if vals else 0
+    def avg(vals): 
+        return round(sum(vals)/len(vals), 2) if vals else 0
 
     text = (
         f"📊 {category_label} for *{player_name}*\n\n"
-        f"👤 Overall (Avg {avg(all_vals)}): {', '.join(map(str, all_vals))}\n"
-        f"🏠 Home (Avg {avg(home_vals)}): {', '.join(map(str, home_vals))}\n"
-        f"🚗 Away (Avg {avg(away_vals)}): {', '.join(map(str, away_vals))}\n"
+        f"👤 Overall (Avg {avg(all_vals)} per match): {', '.join(map(str, all_vals)) or '-'}\n"
+        f"🏠 Home (Avg {avg(home_vals)} per match): {', '.join(map(str, home_vals)) or '-'}\n"
+        f"🚗 Away (Avg {avg(away_vals)} per match): {', '.join(map(str, away_vals)) or '-'}\n"
     )
+
     await q.edit_message_text(text, parse_mode="Markdown")
+
 
 async def handle_player_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, player_id = q.data.split("_", 1)
-    st, d = api_get("/players", {"id": player_id, "season": SEASON})
-    if st != 200 or not d.get("response"): return
-    player = d["response"][0]["player"]
-    context.user_data["player_name"] = player["name"]
-    await ask_league(update, context, player_id, player["name"])
+
+    # 1️⃣ Obtener perfil del jugador (nombre + equipo actual)
+    st_profile, d_profile = api_get("/players/profiles", {"id": player_id})
+    if st_profile != 200 or not d_profile.get("response"):
+        await q.edit_message_text("⚠️ No profile found for this player.")
+        return
+
+    player = d_profile["response"][0]["player"]
+    pname = player["name"]
+    team_name = d_profile["response"][0].get("statistics", [{}])[0].get("team", {}).get("name", "Unknown Team")
+
+    context.user_data["player_name"] = pname
+
+    # 2️⃣ Obtener temporadas y ligas disponibles
+    st_seasons, d_seasons = api_get("/players/seasons", {"id": player_id})
+    if st_seasons != 200 or not d_seasons.get("response"):
+        await q.edit_message_text(f"⚠️ No seasons available for {pname}.")
+        return
+
+    # Filtrar SOLO la temporada actual
+    leagues = [lg for lg in d_seasons["response"] if lg.get("season") == SEASON]
+    if not leagues:
+        await q.edit_message_text(f"❌ {pname} has no stats in season {SEASON}.")
+        return
+
+    # 3️⃣ Construir teclado con las ligas
+    kb = [[B(f"{pname} ({lg['league']['name']})", f"playerleague_{player_id}_{lg['league']['id']}")] for lg in leagues]
+    kb.append([B("⬅️ Back", "back_playersearch")])
+
+    await q.edit_message_text(
+        f"📋 Select a league for *{pname}* ({team_name}):",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+
+
 
 # ----------------- /subscribe -----------------
 async def subscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1223,9 +1281,10 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_ranking_category, pattern=r"^rankcat_\d+_[a-z0-9\-]+$"))
 
     app.add_handler(CommandHandler("player", cmd_player))
-    app.add_handler(CallbackQueryHandler(handle_player_league, pattern=r"^playerleague_\d+_\d+$"))
-    app.add_handler(CallbackQueryHandler(handle_player_stat, pattern=r"^playerstat_\d+_\d+_[a-z0-9\-]+$"))
+
     app.add_handler(CallbackQueryHandler(handle_player_pick, pattern=r"^playerpick_\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_player_league, pattern=r"^playerleague_\d+_\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_player_stat, pattern=r"^playerstat_\d+_\d+_.+$"))
 
 
     print("✅ Bot en marcha…")
