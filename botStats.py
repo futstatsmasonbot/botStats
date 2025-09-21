@@ -1139,6 +1139,13 @@ async def handle_player_pick_from_id(update: Update, context: ContextTypes.DEFAU
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
+@safe_handler
+async def handle_player_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler para cuando se pulsa un botón playerpick_xxx"""
+    q = update.callback_query
+    await q.answer()
+    _, player_id = q.data.split("_", 1)
+    await handle_player_pick_from_id(update, context, int(player_id))
 
 
 # ----------------- /subscribe -----------------
@@ -1186,6 +1193,7 @@ async def fixture_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append(f"\n🏆 {name1}: {wins1}  | 🤝 Draws: {draws} | {name2}: {wins2}")
     lines.append(f"⚽ Goals — {name1}: {goals1} | {name2}: {goals2}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
 
 # ----------------- main -----------------
 def main():
