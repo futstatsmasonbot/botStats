@@ -1007,20 +1007,84 @@ async def cmd_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Si solo hay 1
+    # Si solo hay 1 → ir directo al flujo de pick
     player = players[0]
     context.user_data["player_name"] = player["player"]["name"]
     await handle_player_pick_from_id(update, context, player["player"]["id"])
 
-async def handle_player_pick_from_id(update, context, player_id):
-    # Reutiliza exactamente la misma lógica de handle_player_pick,
-    # pero sin q = update.callback_query
+
+@safe_handler
+async def handle_player_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler para cuando se pulsa un botón playerpick_xxx"""
+    q = update.callback_query
+    await q.answer()
+    _, player_id = q.data.split("_", 1)
+    await handle_player_pick_from_id(update, context, int(player_id))
+
+
+@safe_handler
+async def handle_player_pick_from_id(update: Update, context: ContextTypes.DEFAULT_TYPE, player_id: int):
+    # 1️⃣ Perfil básico
     st_profile, d_profile = api_get("/players/profiles", {"id": player_id})
-    # … resto del código de handle_player_pick …
+    if st_profile != 200 or not d_profile.get("response"):
+        if update.message:
+            await update.message.reply_text("⚠️ No profile found for this player.")
+        else:
+            await update.callback_query.edit_message_text("⚠️ No profile found for this player.")
+        return
+
+    player = d_profile["response"][0]["player"]
+    pname = player["name"]
+
+    # Equipo actual (puede faltar)
+    team_name = d_profile["response"][0].get("statistics", [{}])[0].get("team", {}).get("name")
+
+    # Si no hay equipo → buscar en squads
+    if not team_name:
+        st_squads, d_squads = api_get("/players/squads", {"player": player_id})
+        if st_squads == 200 and d_squads.get("response"):
+            team_name = d_squads["response"][0]["team"]["name"]
+
+    if not team_name:
+        team_name = "No current team"
+
+    context.user_data["player_name"] = pname
+
+    # Temporadas/Ligas
+    st_seasons, d_seasons = api_get("/players/seasons", {"id": player_id})
+    if st_seasons != 200 or not d_seasons.get("response"):
+        if update.message:
+            await update.message.reply_text(f"⚠️ No seasons available for {pname}.")
+        else:
+            await update.callback_query.edit_message_text(f"⚠️ No seasons available for {pname}.")
+        return
+
+    leagues = [lg for lg in d_seasons["response"] if lg.get("season") == SEASON]
+    if not leagues:
+        if update.message:
+            await update.message.reply_text(f"❌ {pname} has no stats in season {SEASON}.")
+        else:
+            await update.callback_query.edit_message_text(f"❌ {pname} has no stats in season {SEASON}.")
+        return
+
+    kb = [[B(f"{pname} ({lg['league']['name']})", f"playerleague_{player_id}_{lg['league']['id']}_{SEASON}")] for lg in leagues]
+    kb.append([B("⬅️ Back", "back_playersearch")])
+
+    if update.message:
+        await update.message.reply_text(
+            f"📋 Select a league for *{pname}* ({team_name}):",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            f"📋 Select a league for *{pname}* ({team_name}):",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
 
 
-
-
+@safe_handler
 async def handle_player_league(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, player_id, league_id, season = q.data.split("_", 3)
@@ -1045,6 +1109,7 @@ async def handle_player_league(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
+@safe_handler
 async def handle_player_stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, player_id, league_id, season, cat_slug = q.data.split("_", 4)
@@ -1093,59 +1158,6 @@ async def handle_player_stat(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"🚗 Away (Avg {avg(away_vals)}): {', '.join(map(str, away_vals)) or '-'}\n"
     )
     await q.edit_message_text(text, parse_mode="Markdown")
-
-
-async def handle_player_pick_from_id(update: Update, context: ContextTypes.DEFAULT_TYPE, player_id: int):
-    # 1️⃣ Perfil básico
-    st_profile, d_profile = api_get("/players/profiles", {"id": player_id})
-    if st_profile != 200 or not d_profile.get("response"):
-        await update.message.reply_text("⚠️ No profile found for this player.")
-        return
-
-    player = d_profile["response"][0]["player"]
-    pname = player["name"]
-
-    # Equipo actual (puede faltar)
-    team_name = d_profile["response"][0].get("statistics", [{}])[0].get("team", {}).get("name")
-
-    # 2️⃣ Si no hay equipo → intentar encontrarlo en squads
-    if not team_name:
-        st_squads, d_squads = api_get("/players/squads", {"player": player_id})
-        if st_squads == 200 and d_squads.get("response"):
-            team_name = d_squads["response"][0]["team"]["name"]
-
-    if not team_name:
-        team_name = "No current team"
-
-    context.user_data["player_name"] = pname
-
-    # 3️⃣ Temporadas/Ligas
-    st_seasons, d_seasons = api_get("/players/seasons", {"id": player_id})
-    if st_seasons != 200 or not d_seasons.get("response"):
-        await update.message.reply_text(f"⚠️ No seasons available for {pname}.")
-        return
-
-    leagues = [lg for lg in d_seasons["response"] if lg.get("season") == SEASON]
-    if not leagues:
-        await update.message.reply_text(f"❌ {pname} has no stats in season {SEASON}.")
-        return
-
-    kb = [[B(f"{pname} ({lg['league']['name']})", f"playerleague_{player_id}_{lg['league']['id']}")] for lg in leagues]
-    kb.append([B("⬅️ Back", "back_playersearch")])
-
-    await update.message.reply_text(
-        f"📋 Select a league for *{pname}* ({team_name}):",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-
-@safe_handler
-async def handle_player_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler para cuando se pulsa un botón playerpick_xxx"""
-    q = update.callback_query
-    await q.answer()
-    _, player_id = q.data.split("_", 1)
-    await handle_player_pick_from_id(update, context, int(player_id))
 
 
 # ----------------- /subscribe -----------------
