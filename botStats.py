@@ -985,7 +985,7 @@ async def cmd_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     name = " ".join(context.args).lower()
 
-    # 1️⃣ Buscar jugador por nombre (sin season)
+    # Buscar jugador por nombre sin season
     st, d = api_get("/players/profiles", {"search": name})
     if st != 200 or not d.get("response"):
         await update.message.reply_text(f"❌ No players found matching '{name}'.")
@@ -993,28 +993,31 @@ async def cmd_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     players = d["response"]
 
-    # 2️⃣ Si hay varios → que elija
+    # Si hay varios → que elija
     if len(players) > 1:
         kb = []
         for p in players:
             pid = p["player"]["id"]
             pname = p["player"]["name"]
-            tname = p.get("team", {}).get("name", "Unknown Team")  # puede no estar
+            tname = p.get("team", {}).get("name", "Unknown Team")
             kb.append([B(f"{pname} ({tname})", f"playerpick_{pid}")])
-
         await update.message.reply_text(
             f"👀 Multiple players found matching '{name}'. Please select the correct player:",
             reply_markup=InlineKeyboardMarkup(kb)
         )
         return
 
-    # 3️⃣ Si solo hay 1 → Simular "pick" directo
+    # Si solo hay 1
     player = players[0]
     context.user_data["player_name"] = player["player"]["name"]
+    await handle_player_pick_from_id(update, context, player["player"]["id"])
 
-    # Reutilizamos la misma lógica de handle_player_pick
-    fake_query = type("obj", (), {"data": f"playerpick_{player['player']['id']}", "answer": (lambda *a, **k: None)})
-    await handle_player_pick(update, context)  # 👈 así siempre pasa por el mismo flujo
+async def handle_player_pick_from_id(update, context, player_id):
+    # Reutiliza exactamente la misma lógica de handle_player_pick,
+    # pero sin q = update.callback_query
+    st_profile, d_profile = api_get("/players/profiles", {"id": player_id})
+    # … resto del código de handle_player_pick …
+
 
 
 
@@ -1092,14 +1095,11 @@ async def handle_player_stat(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await q.edit_message_text(text, parse_mode="Markdown")
 
 
-async def handle_player_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    _, player_id = q.data.split("_", 1)
-
+async def handle_player_pick_from_id(update: Update, context: ContextTypes.DEFAULT_TYPE, player_id: int):
     # 1️⃣ Perfil básico
     st_profile, d_profile = api_get("/players/profiles", {"id": player_id})
     if st_profile != 200 or not d_profile.get("response"):
-        await q.edit_message_text("⚠️ No profile found for this player.")
+        await update.message.reply_text("⚠️ No profile found for this player.")
         return
 
     player = d_profile["response"][0]["player"]
@@ -1114,7 +1114,6 @@ async def handle_player_pick(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if st_squads == 200 and d_squads.get("response"):
             team_name = d_squads["response"][0]["team"]["name"]
 
-    # Fallback definitivo
     if not team_name:
         team_name = "No current team"
 
@@ -1123,22 +1122,23 @@ async def handle_player_pick(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # 3️⃣ Temporadas/Ligas
     st_seasons, d_seasons = api_get("/players/seasons", {"id": player_id})
     if st_seasons != 200 or not d_seasons.get("response"):
-        await q.edit_message_text(f"⚠️ No seasons available for {pname}.")
+        await update.message.reply_text(f"⚠️ No seasons available for {pname}.")
         return
 
     leagues = [lg for lg in d_seasons["response"] if lg.get("season") == SEASON]
     if not leagues:
-        await q.edit_message_text(f"❌ {pname} has no stats in season {SEASON}.")
+        await update.message.reply_text(f"❌ {pname} has no stats in season {SEASON}.")
         return
 
     kb = [[B(f"{pname} ({lg['league']['name']})", f"playerleague_{player_id}_{lg['league']['id']}")] for lg in leagues]
     kb.append([B("⬅️ Back", "back_playersearch")])
 
-    await q.edit_message_text(
+    await update.message.reply_text(
         f"📋 Select a league for *{pname}* ({team_name}):",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb)
     )
+
 
 
 # ----------------- /subscribe -----------------
