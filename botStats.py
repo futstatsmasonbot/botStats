@@ -1092,12 +1092,11 @@ async def handle_player_stat(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await q.edit_message_text(text, parse_mode="Markdown")
 
 
-
 async def handle_player_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, player_id = q.data.split("_", 1)
 
-    # 1️⃣ Obtener perfil del jugador (nombre + equipo actual)
+    # 1️⃣ Perfil básico
     st_profile, d_profile = api_get("/players/profiles", {"id": player_id})
     if st_profile != 200 or not d_profile.get("response"):
         await q.edit_message_text("⚠️ No profile found for this player.")
@@ -1105,23 +1104,33 @@ async def handle_player_pick(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     player = d_profile["response"][0]["player"]
     pname = player["name"]
-    team_name = d_profile["response"][0].get("statistics", [{}])[0].get("team", {}).get("name", "Unknown Team")
+
+    # Equipo actual (puede faltar)
+    team_name = d_profile["response"][0].get("statistics", [{}])[0].get("team", {}).get("name")
+
+    # 2️⃣ Si no hay equipo → intentar encontrarlo en squads
+    if not team_name:
+        st_squads, d_squads = api_get("/players/squads", {"player": player_id})
+        if st_squads == 200 and d_squads.get("response"):
+            team_name = d_squads["response"][0]["team"]["name"]
+
+    # Fallback definitivo
+    if not team_name:
+        team_name = "No current team"
 
     context.user_data["player_name"] = pname
 
-    # 2️⃣ Obtener temporadas y ligas disponibles
+    # 3️⃣ Temporadas/Ligas
     st_seasons, d_seasons = api_get("/players/seasons", {"id": player_id})
     if st_seasons != 200 or not d_seasons.get("response"):
         await q.edit_message_text(f"⚠️ No seasons available for {pname}.")
         return
 
-    # Filtrar SOLO la temporada actual
     leagues = [lg for lg in d_seasons["response"] if lg.get("season") == SEASON]
     if not leagues:
         await q.edit_message_text(f"❌ {pname} has no stats in season {SEASON}.")
         return
 
-    # 3️⃣ Construir teclado con las ligas
     kb = [[B(f"{pname} ({lg['league']['name']})", f"playerleague_{player_id}_{lg['league']['id']}")] for lg in leagues]
     kb.append([B("⬅️ Back", "back_playersearch")])
 
@@ -1130,7 +1139,6 @@ async def handle_player_pick(update: Update, context: ContextTypes.DEFAULT_TYPE)
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb)
     )
-
 
 
 # ----------------- /subscribe -----------------
