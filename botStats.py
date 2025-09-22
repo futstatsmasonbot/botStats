@@ -900,12 +900,21 @@ async def handle_team_timeline(update: Update, context: ContextTypes.DEFAULT_TYP
     ]
     await q.edit_message_text(f"🏟️ {category_label} — Team range:", reply_markup=InlineKeyboardMarkup(kb))
 
-@safe_handler
+
 #@restricted
+@safe_handler
 async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, team_id, cat_slug, rng = q.data.split("_", 3)
     category_label = CAT_SLUG.get(cat_slug, cat_slug)
+
+    # 🔹 Guardamos los parámetros en user_data (Punto 2)
+    context.user_data["team_tl_params"] = {
+        "team_id": team_id,
+        "cat_slug": cat_slug,
+        "rng": rng,
+        "homeaway": context.user_data.get("team_tl_params", {}).get("homeaway", "all")
+    }
 
     # 1️⃣ Obtener fixtures filtrados por liga+season
     params = {"team": team_id, "season": SEASON, "league": context.user_data.get("league_id")}
@@ -921,7 +930,10 @@ async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     fixtures = sorted(fixtures, key=lambda x: x["fixture"]["timestamp"] or 0)
 
-    # 2️⃣ Estadísticas por fixture (sin league aquí)
+    # 🔹 Filtramos según Home / Away / All (Punto 3)
+    fixtures = filter_fixtures(fixtures, team_id, context.user_data["team_tl_params"]["homeaway"])
+
+    # 2️⃣ Estadísticas por fixture
     values = []
     for fx in fixtures:
         fid = fx["fixture"]["id"]
@@ -945,12 +957,31 @@ async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         f"🏟️ *{category_label}* — Team Timeline "
         f"({'last '+rng if rng in ('5','10','15') else 'season'})\n"
+        f"Filter: *{context.user_data['team_tl_params']['homeaway'].upper()}*\n"
         f"Avg: *{avg}*\n"
         f"`{seq}`"
     )
-    kb = [[B(tr(context,"btn_back"), f"teamtl_{team_id}_{cat_slug}"),
-           B(tr(context,"btn_home"), "home")]]
+
+    kb = [
+        [B("🏠 Home", f"teamfilter_home_{team_id}_{cat_slug}_{rng}"),
+         B("🚗 Away", f"teamfilter_away_{team_id}_{cat_slug}_{rng}"),
+         B("🌍 All", f"teamfilter_all_{team_id}_{cat_slug}_{rng}")],
+        [B(tr(context,"btn_back"), f"teamtl_{team_id}_{cat_slug}"),
+         B(tr(context,"btn_home"), "home")]
+    ]
     await q.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def set_team_tl_filter(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
+    q = update.callback_query
+    await q.answer()
+
+    params = context.user_data.get("team_tl_params", {})
+    params["homeaway"] = mode
+    context.user_data["team_tl_params"] = params
+
+    # Volvemos a dibujar con los nuevos filtros
+    return await handle_team_range(update, context)
 
 
 #@restricted
@@ -1063,6 +1094,10 @@ def main():
     app.add_handler(CallbackQueryHandler(lambda u,c: set_tl_filter(u,c,"all"),  pattern=r"^tlfilter_all$"))
     app.add_handler(CallbackQueryHandler(handle_ranking, pattern=r"^ranking_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_ranking_category, pattern=r"^rankcat_\d+_[a-z0-9\-]+$"))
+
+    app.add_handler(CallbackQueryHandler(lambda u,c: set_team_tl_filter(u,c,"home"), pattern=r"^teamfilter_home_.*$"))
+    app.add_handler(CallbackQueryHandler(lambda u,c: set_team_tl_filter(u,c,"away"), pattern=r"^teamfilter_away_.*$"))
+    app.add_handler(CallbackQueryHandler(lambda u,c: set_team_tl_filter(u,c,"all"),  pattern=r"^teamfilter_all_.*$"))
 
 
     print("✅ Bot en marcha…")
