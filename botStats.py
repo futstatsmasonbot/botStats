@@ -906,9 +906,8 @@ async def handle_team_timeline(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, team_id, cat_slug, rng = q.data.split("_", 3)
-    category_label = CAT_SLUG.get(cat_slug, cat_slug)
 
-    # 🔹 Guardamos los parámetros en user_data (Punto 2)
+    # 🔹 Guardamos los parámetros en user_data
     context.user_data["team_tl_params"] = {
         "team_id": team_id,
         "cat_slug": cat_slug,
@@ -924,16 +923,37 @@ async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     st_fx, d_fx = api_get("/fixtures", params)
     fixtures = d_fx.get("response", []) if st_fx == 200 else []
     if not fixtures:
-        await q.edit_message_text("⚠️ No matches found.", 
+        await q.edit_message_text("⚠️ No matches found.",
                                   reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]]))
         return
 
     fixtures = sorted(fixtures, key=lambda x: x["fixture"]["timestamp"] or 0)
 
-    # 🔹 Filtramos según Home / Away / All (Punto 3)
-    fixtures = filter_fixtures(fixtures, team_id, context.user_data["team_tl_params"]["homeaway"])
+    # 🔹 Guardamos fixtures en memoria
+    context.user_data["team_tl_fixtures"] = fixtures
 
-    # 2️⃣ Estadísticas por fixture
+    # 🔹 Render inicial (usa la nueva función)
+    await render_team_timeline(q, context)
+
+
+
+@safe_handler
+async def render_team_timeline(q, context):
+    params = context.user_data.get("team_tl_params", {})
+    team_id = params.get("team_id")
+    cat_slug = params.get("cat_slug")
+    rng = params.get("rng")
+    homeaway = params.get("homeaway", "all")
+    category_label = CAT_SLUG.get(cat_slug, cat_slug)
+
+    # Usamos los fixtures ya guardados
+    fixtures = context.user_data.get("team_tl_fixtures", [])
+
+    # Filtramos según home/away/all
+    fixtures = filter_fixtures(fixtures, team_id, homeaway)
+    fixtures = sorted(fixtures, key=lambda x: x["fixture"]["timestamp"] or 0)
+
+    # Estadísticas por fixture
     values = []
     for fx in fixtures:
         fid = fx["fixture"]["id"]
@@ -949,7 +969,7 @@ async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     break
         values.append(val)
 
-    # 3️⃣ Promedio
+    # Promedio
     nums = [safe_int(v) for v in values if isinstance(v, (int, float))]
     avg = round(sum(nums) / len(nums), 2) if nums else 0
     seq = " ".join(str(v) for v in values)
@@ -957,7 +977,7 @@ async def handle_team_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         f"🏟️ *{category_label}* — Team Timeline "
         f"({'last '+rng if rng in ('5','10','15') else 'season'})\n"
-        f"Filter: *{context.user_data['team_tl_params']['homeaway'].upper()}*\n"
+        f"Filter: *{homeaway.upper()}*\n"
         f"Avg: *{avg}*\n"
         f"`{seq}`"
     )
@@ -980,8 +1000,8 @@ async def set_team_tl_filter(update: Update, context: ContextTypes.DEFAULT_TYPE,
     params["homeaway"] = mode
     context.user_data["team_tl_params"] = params
 
-    # Volvemos a dibujar con los nuevos filtros
-    return await handle_team_range(update, context)
+    # Usar los fixtures ya guardados en memoria
+    return await render_team_timeline(q, context)
 
 
 #@restricted
