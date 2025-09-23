@@ -479,22 +479,144 @@ async def handle_country_national(update: Update, context: ContextTypes.DEFAULT_
 
 # ----------------- Liga → Equipo → Categoría -----------------
 #@restricted
+@safe_handler
 async def handle_league(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     league_id = q.data.replace("league_","")
     context.user_data["league_id"] = league_id
-    status, data = api_get("/teams", {"league": league_id, "season": SEASON})
-    teams = data.get("response", []) if status == 200 else []
+
+    st, d = api_get("/teams", {"league": league_id, "season": SEASON})
+    teams = d.get("response", []) if st == 200 else []
     if not teams:
         await q.edit_message_text(tr(context,"no_teams"),
                                   reply_markup=InlineKeyboardMarkup(
                                       [[B(tr(context,"btn_back"), "menu_stats"),
                                         B(tr(context,"btn_home"), "home")]]))
         return
+
     team_pairs = [(t["team"]["name"], t["team"]["id"]) for t in teams]
+
+    if context.user_data.get("mode") == "fixture":
+        kb = make_keyboard(team_pairs, prefix="fxhome_", cols=2)
+        kb.append([B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")])
+        await q.edit_message_text("🏠 Select Home Team:", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    # flujo normal stats
     kb = make_keyboard(team_pairs, prefix="team_", cols=2)
     kb.append([B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")])
     await q.edit_message_text(tr(context,"select_team"), reply_markup=InlineKeyboardMarkup(kb))
+
+@safe_handler
+async def handle_fx_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    home_id = q.data.replace("fxhome_","")
+    context.user_data["fx_home"] = home_id
+
+    league_id = context.user_data.get("league_id")
+    st, d = api_get("/teams", {"league": league_id, "season": SEASON})
+    teams = d.get("response", []) if st == 200 else []
+
+    team_pairs = [(t["team"]["name"], t["team"]["id"]) for t in teams]
+    kb = make_keyboard(team_pairs, prefix="fxaway_", cols=2)
+    kb.append([B("⬅️ Back", f"league_{league_id}")])
+    await q.edit_message_text("🚗 Select Away Team:", reply_markup=InlineKeyboardMarkup(kb))
+
+@safe_handler
+async def handle_fx_away(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    away_id = q.data.replace("fxaway_","")
+    context.user_data["fx_away"] = away_id
+
+    kb = [
+        [B("Last 5 matches", "fxrange_5"), B("Last 10 matches", "fxrange_10")],
+        [B("⬅️ Back", f"fxhome_{context.user_data['fx_home']}")]
+    ]
+    await q.edit_message_text("📊 Choose head-to-head range:", reply_markup=InlineKeyboardMarkup(kb))
+
+@safe_handler
+async def handle_fx_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    rng = int(q.data.replace("fxrange_",""))
+
+    home_id = int(context.user_data["fx_home"])
+    away_id = int(context.user_data["fx_away"])
+
+    st, d = api_get("/fixtures/headtohead", {"h2h": f"{home_id}-{away_id}", "last": rng})
+    fixtures = d.get("response", []) if st == 200 else []
+    if not fixtures:
+        await q.edit_message_text("⚠️ No head-to-head data found.")
+        return
+
+    home_name = fixtures[0]["teams"]["home"]["name"]
+    away_name = fixtures[0]["teams"]["away"]["name"]
+
+    # 📝 Parte 1: Marcadores históricos
+    wins1 = wins2 = draws = goals1 = goals2 = 0
+    lines = [f"🤝 *{home_name}* vs *{away_name}* — last {len(fixtures)} matches\n"]
+
+    for fx in fixtures:
+        s = fx["score"].get("fulltime") or {}
+        g1 = s.get("home") or 0
+        g2 = s.get("away") or 0
+        goals1 += g1; goals2 += g2
+        if g1 > g2: wins1 += 1
+        elif g2 > g1: wins2 += 1
+        else: draws += 1
+        home = fx["teams"]["home"]["name"]
+        away = fx["teams"]["away"]["name"]
+        lines.append(f"- {home} {g1}-{g2} {away}")
+
+    lines.append(f"\n🏆 {home_name}: {wins1} | 🤝 Draws: {draws} | {away_name}: {wins2}")
+    lines.append(f"⚽ Goals — {home_name}: {goals1} | {away_name}: {goals2}\n")
+
+    # 📝 Parte 2: Estadísticas medias
+    stats_home, stats_away = {}, {}
+    for fx in fixtures:
+        fid = fx["fixture"]["id"]
+
+        # Stats del home
+        st1, d1 = api_get("/fixtures/statistics", {"fixture": fid, "team": home_id})
+        if st1 == 200 and d1.get("response"):
+            for kv in d1["response"][0]["statistics"]:
+                typ = kv.get("type")
+                val = safe_int(kv.get("value"))
+                if val is not None:
+                    stats_home.setdefault(typ, []).append(val)
+
+        # Stats del away
+        st2, d2 = api_get("/fixtures/statistics", {"fixture": fid, "team": away_id})
+        if st2 == 200 and d2.get("response"):
+            for kv in d2["response"][0]["statistics"]:
+                typ = kv.get("type")
+                val = safe_int(kv.get("value"))
+                if val is not None:
+                    stats_away.setdefault(typ, []).append(val)
+
+    def avg(d):
+        return {k: round(sum(v)/len(v), 2) for k, v in d.items() if v}
+
+    avg_home = avg(stats_home)
+    avg_away = avg(stats_away)
+
+    categories = [
+        "Corners", "Shots Total", "Shots on Target",
+        "Offsides", "Tackles", "Yellow Cards", "Red Cards"
+    ]
+
+    for cat in categories:
+        h_val = next((v for k,v in avg_home.items() if cat.lower() in k.lower()), "-")
+        a_val = next((v for k,v in avg_away.items() if cat.lower() in k.lower()), "-")
+        if h_val == "-" and a_val == "-":
+            continue
+        total = (h_val if h_val != "-" else 0) + (a_val if a_val != "-" else 0)
+        lines.append(f"🏠 {home_name} {cat}: *{h_val}*")
+        lines.append(f"🚗 {away_name} {cat}: *{a_val}*")
+        lines.append(f"🔢 Total Exp: {total}\n")
+
+    await q.edit_message_text("\n".join(lines), parse_mode="Markdown")
+
+
 
 #@restricted
 async def handle_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1044,34 +1166,11 @@ def find_team_id_by_name(name: str):
         return item["team"]["id"], item["team"]["name"]
     return None, None
 
+@safe_handler
 async def fixture_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    a, b = parse_fixture_args(text)
-    if not a or not b:
-        await update.message.reply_text(tr(context,"fx_prompt")); return
-    await update.message.reply_text(tr(context,"fx_search"))
-    id1, name1 = find_team_id_by_name(a)
-    id2, name2 = find_team_id_by_name(b)
-    if not id1 or not id2:
-        await update.message.reply_text(tr(context,"fx_no")); return
-    status, data = api_get("/fixtures/headtohead", {"h2h": f"{id1}-{id2}", "last": 5})
-    fixtures = data.get("response", []) if status == 200 else []
-    if not fixtures:
-        await update.message.reply_text(tr(context,"fx_no")); return
-    wins1=wins2=draws=goals1=goals2=0
-    lines=[f"🤝 *{name1}* vs *{name2}* — last {len(fixtures)}\n"]
-    for fx in fixtures:
-        s = fx["score"]; ft = s.get("fulltime") or {}
-        g1 = (ft.get("home") or 0); g2 = (ft.get("away") or 0)
-        goals1 += g1; goals2 += g2
-        if g1>g2: wins1+=1
-        elif g2>g1: wins2+=1
-        else: draws+=1
-        home = fx["teams"]["home"]["name"]; away = fx["teams"]["away"]["name"]
-        lines.append(f"- {home} {g1}-{g2} {away}")
-    lines.append(f"\n🏆 {name1}: {wins1}  | 🤝 Draws: {draws} | {name2}: {wins2}")
-    lines.append(f"⚽ Goals — {name1}: {goals1} | {name2}: {goals2}")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    context.user_data["mode"] = "fixture"   # ⚡️ Modo especial
+    await update.message.reply_text("🌍 Select a region:", reply_markup=kb_regions(context))
+
 
 # ----------------- main -----------------
 def main():
@@ -1118,6 +1217,13 @@ def main():
     app.add_handler(CallbackQueryHandler(lambda u,c: set_team_tl_filter(u,c,"home"), pattern=r"^teamfilter_home_.*$"))
     app.add_handler(CallbackQueryHandler(lambda u,c: set_team_tl_filter(u,c,"away"), pattern=r"^teamfilter_away_.*$"))
     app.add_handler(CallbackQueryHandler(lambda u,c: set_team_tl_filter(u,c,"all"),  pattern=r"^teamfilter_all_.*$"))
+
+     # Fixture flow
+    app.add_handler(CommandHandler("fixture", fixture_cmd))
+    app.add_handler(CallbackQueryHandler(handle_fx_home,  pattern=r"^fxhome_\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_fx_away,  pattern=r"^fxaway_\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_fx_range, pattern=r"^fxrange_(5|10)$"))
+
 
 
     print("✅ Bot en marcha…")
