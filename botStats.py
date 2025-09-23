@@ -496,12 +496,6 @@ async def handle_league(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     team_pairs = [(t["team"]["name"], t["team"]["id"]) for t in teams]
 
-    if context.user_data.get("mode") == "fixture":
-        kb = make_keyboard(team_pairs, prefix="fxhome_", cols=2)
-        kb.append([B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")])
-        await q.edit_message_text("🏠 Select Home Team:", reply_markup=InlineKeyboardMarkup(kb))
-        return
-
     # flujo normal stats
     kb = make_keyboard(team_pairs, prefix="team_", cols=2)
     kb.append([B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")])
@@ -537,82 +531,126 @@ async def handle_fx_away(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @safe_handler
 async def handle_fx_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    rng = int(q.data.replace("fxrange_",""))
+    rng = int(q.data.replace("fxrange_", ""))
 
     home_id = int(context.user_data["fx_home"])
     away_id = int(context.user_data["fx_away"])
+    name1, name2 = context.user_data.get("fx_names", ("Home", "Away"))
 
+    # Traemos los últimos N enfrentamientos entre ambos (en cualquier cancha)
     st, d = api_get("/fixtures/headtohead", {"h2h": f"{home_id}-{away_id}", "last": rng})
     fixtures = d.get("response", []) if st == 200 else []
     if not fixtures:
         await q.edit_message_text("⚠️ No head-to-head data found.")
         return
 
-    home_name = fixtures[0]["teams"]["home"]["name"]
-    away_name = fixtures[0]["teams"]["away"]["name"]
+    # Subconjuntos por condición (desde la perspectiva de 'home_id')
+    fixtures_A_home = [fx for fx in fixtures if fx["teams"]["home"]["id"] == home_id]
+    fixtures_A_away = [fx for fx in fixtures if fx["teams"]["away"]["id"] == home_id]
 
-    # 📝 Parte 1: Marcadores históricos
-    wins1 = wins2 = draws = goals1 = goals2 = 0
-    lines = [f"🤝 *{home_name}* vs *{away_name}* — last {len(fixtures)} matches\n"]
+    def summarize_score(fixts):
+        wA=wB=dr=gA=gB=0
+        lines=[]
+        for fx in fixts:
+            ft = (fx["score"].get("fulltime") or {})
+            g1 = ft.get("home") or 0
+            g2 = ft.get("away") or 0
+            # mapea a A/B según IDs reales del fixture
+            idH = fx["teams"]["home"]["id"]
+            if idH == home_id:
+                gA += g1; gB += g2
+                if   g1>g2: wA+=1
+                elif g2>g1: wB+=1
+                else: dr+=1
+            else:
+                # A es visitante en este fixture
+                gA += g2; gB += g1
+                if   g2>g1: wA+=1
+                elif g1>g2: wB+=1
+                else: dr+=1
+            lines.append(f"- {fx['teams']['home']['name']} {g1}-{g2} {fx['teams']['away']['name']}")
+        return lines, wA, dr, wB, gA, gB
 
-    for fx in fixtures:
-        s = fx["score"].get("fulltime") or {}
-        g1 = s.get("home") or 0
-        g2 = s.get("away") or 0
-        goals1 += g1; goals2 += g2
-        if g1 > g2: wins1 += 1
-        elif g2 > g1: wins2 += 1
-        else: draws += 1
-        home = fx["teams"]["home"]["name"]
-        away = fx["teams"]["away"]["name"]
-        lines.append(f"- {home} {g1}-{g2} {away}")
+    def avg_stats_for(fixts, team_id):
+        bucket = {}
+        for fx in fixts:
+            fid = fx["fixture"]["id"]
+            st_s, d_s = api_get("/fixtures/statistics", {"fixture": fid, "team": team_id})
+            if st_s == 200 and d_s.get("response"):
+                for kv in d_s["response"][0].get("statistics", []):
+                    typ = kv.get("type","")
+                    val = safe_int(kv.get("value"))
+                    if val is None: 
+                        continue
+                    bucket.setdefault(typ, []).append(val)
+        return {k: round(sum(v)/len(v), 2) for k,v in bucket.items() if v}
 
-    lines.append(f"\n🏆 {home_name}: {wins1} | 🤝 Draws: {draws} | {away_name}: {wins2}")
-    lines.append(f"⚽ Goals — {home_name}: {goals1} | {away_name}: {goals2}\n")
+    # ---------- BLOQUE 1: cuando A fue LOCAL ----------
+    lines = [f"🏟️ *{name1}* vs *{name2}* — last {rng} (A HOME)\n"]
+    if fixtures_A_home:
+        list_lines, wA, dr, wB, gA, gB = summarize_score(fixtures_A_home)
+        lines += list_lines
+        lines.append(f"\n🏆 {name1}: {wA} | 🤝 Draws: {dr} | {name2}: {wB}")
+        lines.append(f"⚽ Goals — {name1}: {gA} | {name2}: {gB}\n")
 
-    # 📝 Parte 2: Estadísticas medias
-    stats_home, stats_away = {}, {}
-    for fx in fixtures:
-        fid = fx["fixture"]["id"]
+        avg_A_home = avg_stats_for(fixtures_A_home, home_id)  # A en casa
+        avg_B_away = avg_stats_for(fixtures_A_home, away_id)  # B de visita
 
-        # Stats del home
-        st1, d1 = api_get("/fixtures/statistics", {"fixture": fid, "team": home_id})
-        if st1 == 200 and d1.get("response"):
-            for kv in d1["response"][0]["statistics"]:
-                typ = kv.get("type")
-                val = safe_int(kv.get("value"))
-                if val is not None:
-                    stats_home.setdefault(typ, []).append(val)
+        # Muestra un set “rico” de categorías
+        cats = [
+            "Total Shots","Shots on Goal","Shots on Target","Shots Total",
+            "Corners","Offsides","Fouls","Fouls committed","Fouls suffered",
+            "Tackles","Yellow Cards","Red Cards","Goalkeeper Saves","Possession"
+        ]
+        seen=set()
+        for cat in cats:
+            # empareja claves por contains para cubrir variantes
+            a_val = next((v for k,v in avg_A_home.items() if cat.lower() in k.lower()), None)
+            b_val = next((v for k,v in avg_B_away.items() if cat.lower() in k.lower()), None)
+            if a_val is None and b_val is None: 
+                continue
+            key = cat.lower()
+            if key in seen: 
+                continue
+            seen.add(key)
+            lines.append(f"🏠 {name1} {cat}: *{a_val if a_val is not None else '-'}*")
+            lines.append(f"🚗 {name2} {cat}: *{b_val if b_val is not None else '-'}*\n")
+    else:
+        lines.append("_No mutual matches with A at home in this range._\n")
 
-        # Stats del away
-        st2, d2 = api_get("/fixtures/statistics", {"fixture": fid, "team": away_id})
-        if st2 == 200 and d2.get("response"):
-            for kv in d2["response"][0]["statistics"]:
-                typ = kv.get("type")
-                val = safe_int(kv.get("value"))
-                if val is not None:
-                    stats_away.setdefault(typ, []).append(val)
+    # ---------- BLOQUE 2: cuando A fue VISITANTE ----------
+    lines.append(f"\n🚗 *{name1}* vs *{name2}* — last {rng} (A AWAY)\n")
+    if fixtures_A_away:
+        list_lines, wA, dr, wB, gA, gB = summarize_score(fixtures_A_away)
+        lines += list_lines
+        lines.append(f"\n🏆 {name1}: {wA} | 🤝 Draws: {dr} | {name2}: {wB}")
+        lines.append(f"⚽ Goals — {name1}: {gA} | {name2}: {gB}\n")
 
-    def avg(d):
-        return {k: round(sum(v)/len(v), 2) for k, v in d.items() if v}
+        avg_A_away = avg_stats_for(fixtures_A_away, home_id)  # A de visita (mismo team_id)
+        avg_B_home = avg_stats_for(fixtures_A_away, away_id)  # B en casa
 
-    avg_home = avg(stats_home)
-    avg_away = avg(stats_away)
-
-    # 🔹 Obtener todas las categorías únicas
-    all_cats = sorted(set(avg_home.keys()) | set(avg_away.keys()))
-
-    for cat in all_cats:
-        h_val = avg_home.get(cat, "-")
-        a_val = avg_away.get(cat, "-")
-        if h_val == "-" and a_val == "-":
-            continue
-        total = (h_val if h_val != "-" else 0) + (a_val if a_val != "-" else 0)
-        lines.append(f"🏠 {home_name} {cat}: *{h_val}*")
-        lines.append(f"🚗 {away_name} {cat}: *{a_val}*")
-        lines.append(f"🔢 Total Exp: {total}\n")
+        cats = [
+            "Total Shots","Shots on Goal","Shots on Target","Shots Total",
+            "Corners","Offsides","Fouls","Fouls committed","Fouls suffered",
+            "Tackles","Yellow Cards","Red Cards","Goalkeeper Saves","Possession"
+        ]
+        seen=set()
+        for cat in cats:
+            a_val = next((v for k,v in avg_A_away.items() if cat.lower() in k.lower()), None)
+            b_val = next((v for k,v in avg_B_home.items() if cat.lower() in k.lower()), None)
+            if a_val is None and b_val is None: 
+                continue
+            key = cat.lower()
+            if key in seen: 
+                continue
+            seen.add(key)
+            lines.append(f"🚗 {name1} {cat}: *{a_val if a_val is not None else '-'}*")
+            lines.append(f"🏠 {name2} {cat}: *{b_val if b_val is not None else '-'}*\n")
+    else:
+        lines.append("_No mutual matches with A away in this range._\n")
 
     await q.edit_message_text("\n".join(lines), parse_mode="Markdown")
+
 
 
 
@@ -1166,8 +1204,30 @@ def find_team_id_by_name(name: str):
 
 @safe_handler
 async def fixture_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["mode"] = "fixture"   # ⚡️ Modo especial
-    await update.message.reply_text("🌍 Select a region:", reply_markup=kb_regions(context))
+    text = (update.message.text or "").strip()
+    a, b = parse_fixture_args(text)
+    if not a or not b:
+        await update.message.reply_text(tr(context,"fx_prompt"))
+        return
+
+    id1, name1 = find_team_id_by_name(a)
+    id2, name2 = find_team_id_by_name(b)
+    if not id1 or not id2:
+        await update.message.reply_text(tr(context,"fx_no"))
+        return
+
+    # Guarda en memoria para el siguiente paso
+    context.user_data["fx_home"]  = id1
+    context.user_data["fx_away"]  = id2
+    context.user_data["fx_names"] = (name1, name2)
+
+    kb = InlineKeyboardMarkup([[B("Last 5", "fxrange_5"), B("Last 10", "fxrange_10")]])
+    await update.message.reply_text(
+        f"📊 Choose range for *{name1}* vs *{name2}*",
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+
 
 
 # ----------------- main -----------------
@@ -1201,7 +1261,6 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_team_range,    pattern=r"^teamrange_\d+_[a-z0-9\-]+_(5|10|15|all)$"))
 
     # /fixture, /subscribe
-    app.add_handler(CommandHandler("fixture", fixture_cmd))
     app.add_handler(CommandHandler("subscribe", subscribe_cmd))
     app.add_handler(CallbackQueryHandler(menu_help,      pattern=r"^menu_help$"))
     app.add_handler(CallbackQueryHandler(menu_subscribe, pattern=r"^menu_subscribe$"))
@@ -1221,6 +1280,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_fx_home,  pattern=r"^fxhome_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_fx_away,  pattern=r"^fxaway_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_fx_range, pattern=r"^fxrange_(5|10)$"))
+    
 
 
 
