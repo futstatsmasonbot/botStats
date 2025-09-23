@@ -479,7 +479,6 @@ async def handle_country_national(update: Update, context: ContextTypes.DEFAULT_
 
 # ----------------- Liga → Equipo → Categoría -----------------
 #@restricted
-@safe_handler
 async def handle_league(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     league_id = q.data.replace("league_","")
@@ -487,19 +486,21 @@ async def handle_league(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     st, d = api_get("/teams", {"league": league_id, "season": SEASON})
     teams = d.get("response", []) if st == 200 else []
-    if not teams:
-        await q.edit_message_text(tr(context,"no_teams"),
-                                  reply_markup=InlineKeyboardMarkup(
-                                      [[B(tr(context,"btn_back"), "menu_stats"),
-                                        B(tr(context,"btn_home"), "home")]]))
-        return
 
     team_pairs = [(t["team"]["name"], t["team"]["id"]) for t in teams]
+
+    if context.user_data.get("fx_mode"):
+        # flujo fixture → elegir equipo local
+        kb = make_keyboard(team_pairs, prefix="fxhome_", cols=2)
+        kb.append([B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")])
+        await q.edit_message_text("🏠 Select Home Team:", reply_markup=InlineKeyboardMarkup(kb))
+        return
 
     # flujo normal stats
     kb = make_keyboard(team_pairs, prefix="team_", cols=2)
     kb.append([B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")])
     await q.edit_message_text(tr(context,"select_team"), reply_markup=InlineKeyboardMarkup(kb))
+
 
 @safe_handler
 async def handle_fx_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1206,27 +1207,35 @@ def find_team_id_by_name(name: str):
 async def fixture_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     a, b = parse_fixture_args(text)
-    if not a or not b:
-        await update.message.reply_text(tr(context,"fx_prompt"))
+
+    if a and b:
+        # flujo directo (TeamA vs TeamB escrito)
+        id1, name1 = find_team_id_by_name(a)
+        id2, name2 = find_team_id_by_name(b)
+        if not id1 or not id2:
+            await update.message.reply_text(tr(context,"fx_no"))
+            return
+
+        context.user_data["fx_home"]  = id1
+        context.user_data["fx_away"]  = id2
+        context.user_data["fx_names"] = (name1, name2)
+
+        kb = InlineKeyboardMarkup([[B("Last 5", "fxrange_5"), B("Last 10", "fxrange_10")]])
+        await update.message.reply_text(
+            f"📊 Choose range for *{name1}* vs *{name2}*",
+            parse_mode="Markdown",
+            reply_markup=kb
+        )
         return
 
-    id1, name1 = find_team_id_by_name(a)
-    id2, name2 = find_team_id_by_name(b)
-    if not id1 or not id2:
-        await update.message.reply_text(tr(context,"fx_no"))
-        return
-
-    # Guarda en memoria para el siguiente paso
-    context.user_data["fx_home"]  = id1
-    context.user_data["fx_away"]  = id2
-    context.user_data["fx_names"] = (name1, name2)
-
-    kb = InlineKeyboardMarkup([[B("Last 5", "fxrange_5"), B("Last 10", "fxrange_10")]])
+    # 🚀 Si no se escribió nada → flujo interactivo
     await update.message.reply_text(
-        f"📊 Choose range for *{name1}* vs *{name2}*",
-        parse_mode="Markdown",
-        reply_markup=kb
+        tr(context,"select_region"),
+        reply_markup=kb_regions(context)
     )
+    # guardamos modo fixture para este flujo
+    context.user_data["fx_mode"] = True
+
 
 
 
