@@ -599,14 +599,12 @@ async def handle_fx_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     avg_home = avg(stats_home)
     avg_away = avg(stats_away)
 
-    categories = [
-        "Corners", "Shots Total", "Shots on Target",
-        "Offsides", "Tackles", "Yellow Cards", "Red Cards"
-    ]
+    # 🔹 Obtener todas las categorías únicas
+    all_cats = sorted(set(avg_home.keys()) | set(avg_away.keys()))
 
-    for cat in categories:
-        h_val = next((v for k,v in avg_home.items() if cat.lower() in k.lower()), "-")
-        a_val = next((v for k,v in avg_away.items() if cat.lower() in k.lower()), "-")
+    for cat in all_cats:
+        h_val = avg_home.get(cat, "-")
+        a_val = avg_away.get(cat, "-")
         if h_val == "-" and a_val == "-":
             continue
         total = (h_val if h_val != "-" else 0) + (a_val if a_val != "-" else 0)
