@@ -189,6 +189,7 @@ T = {
             "/stats - View player stats (Region → Country → League → Team → Category)\n"
             "/player {name} - Search for a player\n"
             "/fixture TeamA vs TeamB - Head-to-head recent results\n"
+            "/ranking - Top 10 players by stat (Region → Country → League → Category)\n"
             "/subscribe - Contact admin\n"
             "/help - Show this help"
         ),
@@ -239,6 +240,7 @@ T = {
             "/start - Iniciar el bot\n"
             "/stats - Ver estadísticas (Región → País → Liga → Equipo → Categoría)\n"
             "/fixture TeamA vs TeamB - Enfrentamientos recientes\n"
+            "/ranking - Top 10 jugadores por estadisticas (Region → Pais → Liga → Categoria)\n"
             "/subscribe - Contactar con el admin\n"
             "/help - Mostrar esta ayuda"
         ),
@@ -727,19 +729,22 @@ async def handle_ranking_range(update: Update, context: ContextTypes.DEFAULT_TYP
     st, d = api_get("/teams", {"league": league_id, "season": SEASON})
     teams = d.get("response", []) if st == 200 else []
 
-    ranking = []
+    # 📊 Ranking de jugadores
+    players = {}  # {pid: {"name":..., "team":..., "values":[...] }}
+
     for t in teams:
         tid = t["team"]["id"]
         tname = t["team"]["name"]
 
-        # Últimos N partidos
+        # Últimos N partidos de ese equipo
         st_fx, d_fx = api_get("/fixtures", {"league": league_id, "season": SEASON, "team": tid, "last": rng})
         fixtures = d_fx.get("response", []) if st_fx == 200 else []
 
         for fx in fixtures:
             fid = fx["fixture"]["id"]
             st_s, d_s = api_get("/fixtures/players", {"fixture": fid, "team": tid})
-            if st_s != 200: continue
+            if st_s != 200: 
+                continue
 
             for block in d_s.get("response", []):
                 for pl in block.get("players", []):
@@ -748,20 +753,36 @@ async def handle_ranking_range(update: Update, context: ContextTypes.DEFAULT_TYP
                     stt   = (pl.get("statistics") or [{}])[0]
 
                     val = map_stat(stt, category_label)
-                    if val is None: continue
-                    ranking.append((val, pname, tname))
+                    if val is None:
+                        continue
 
-    # Ordenar top 10
+                    if pid not in players:
+                        players[pid] = {"name": pname, "team": tname, "values": []}
+                    players[pid]["values"].append(val)
+
+    # Construir ranking: calcular promedio de cada jugador
+    ranking = []
+    for pid, data in players.items():
+        vals = data["values"]
+        if not vals:
+            continue
+        avg = round(sum(vals) / len(vals), 1)
+        ranking.append((avg, data["name"], data["team"], vals))
+
+    # Ordenar por promedio descendente
     ranking.sort(reverse=True, key=lambda x: x[0])
     top10 = ranking[:10]
 
+    # Construcción del mensaje
     lines = [f"🏆 *Top 10 Players for {category_label}* (last {rng} matches)\n"]
-    for val, pname, tname in top10:
-        lines.append(f"{pname} ({tname}): {val}")
+    for avg, pname, tname, vals in top10:
+        seq = ", ".join(str(v) for v in vals)
+        lines.append(f"👤 {pname} ({tname})\n({len(vals)}/{rng}) {seq} (Avg {avg})\n")
 
     kb = [[B(tr(context,"btn_back"), f"rankcat_{league_id}_{cat_slug}"),
            B(tr(context,"btn_home"), "home")]]
     await q.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
 
 
 # ----------------- Mapping stats (player totals) -----------------
