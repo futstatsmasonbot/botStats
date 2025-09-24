@@ -488,18 +488,31 @@ async def handle_league(update: Update, context: ContextTypes.DEFAULT_TYPE):
     st, d = api_get("/teams", {"league": league_id, "season": SEASON})
     teams = d.get("response", []) if st == 200 else []
     if not teams:
-        await q.edit_message_text(tr(context,"no_teams"),
-                                  reply_markup=InlineKeyboardMarkup(
-                                      [[B(tr(context,"btn_back"), "menu_stats"),
-                                        B(tr(context,"btn_home"), "home")]]))
+        await q.edit_message_text(
+            tr(context,"no_teams"),
+            reply_markup=InlineKeyboardMarkup(
+                [[B(tr(context,"btn_back"), "menu_stats"),
+                  B(tr(context,"btn_home"), "home")]]
+            )
+        )
         return
 
-    team_pairs = [(t["team"]["name"], t["team"]["id"]) for t in teams]
+    # 🔹 Si venimos de /ranking → elegir categoría en vez de equipo
+    if context.user_data.get("mode") == "ranking":
+        cat_pairs = [(c, slugify(c)) for c in CATS]
+        kb = make_keyboard(cat_pairs, prefix=f"rankcat_{league_id}_", cols=2)
+        kb.append([B(tr(context,"btn_back"), f"country_{context.user_data.get('country','')}"),
+                   B(tr(context,"btn_home"), "home")])
+        await q.edit_message_text("📊 Choose ranking category:", reply_markup=InlineKeyboardMarkup(kb))
+        return
 
-    # flujo normal stats
+    # 🔹 Flujo normal stats → elegir equipo
+    team_pairs = [(t["team"]["name"], t["team"]["id"]) for t in teams]
     kb = make_keyboard(team_pairs, prefix="team_", cols=2)
     kb.append([B(tr(context,"btn_back"), "menu_stats"), B(tr(context,"btn_home"), "home")])
     await q.edit_message_text(tr(context,"select_team"), reply_markup=InlineKeyboardMarkup(kb))
+
+
 
 @safe_handler
 async def handle_fx_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -687,9 +700,30 @@ async def handle_ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_ranking_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, league_id, cat_slug = q.data.split("_", 2)
+
+    # Guardamos datos
+    context.user_data["ranking_league"] = league_id
+    context.user_data["ranking_cat"] = cat_slug
+
+    kb = [
+        [B("Last 5",  "rankrange_5"),
+         B("Last 10", "rankrange_10"),
+         B("Last 15", "rankrange_15")],
+        [B(tr(context,"btn_back"), f"ranking_{league_id}"),
+         B(tr(context,"btn_home"), "home")]
+    ]
+    await q.edit_message_text("📊 Choose sample size:", reply_markup=InlineKeyboardMarkup(kb))
+
+@safe_handler
+async def handle_ranking_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    rng = int(q.data.replace("rankrange_", ""))
+
+    league_id = context.user_data["ranking_league"]
+    cat_slug  = context.user_data["ranking_cat"]
     category_label = CAT_SLUG.get(cat_slug, cat_slug)
 
-    # Obtener todos los equipos de esa liga
+    # Obtener equipos de la liga
     st, d = api_get("/teams", {"league": league_id, "season": SEASON})
     teams = d.get("response", []) if st == 200 else []
 
@@ -697,29 +731,36 @@ async def handle_ranking_category(update: Update, context: ContextTypes.DEFAULT_
     for t in teams:
         tid = t["team"]["id"]
         tname = t["team"]["name"]
-        # Últimos 10 partidos
-        st_fx, d_fx = api_get("/fixtures", {"league": league_id, "season": SEASON, "team": tid, "last": 10})
+
+        # Últimos N partidos
+        st_fx, d_fx = api_get("/fixtures", {"league": league_id, "season": SEASON, "team": tid, "last": rng})
         fixtures = d_fx.get("response", []) if st_fx == 200 else []
-        total = 0
+
         for fx in fixtures:
             fid = fx["fixture"]["id"]
-            st_s, d_s = api_get("/fixtures/statistics", {"fixture": fid, "team": tid})
-            stats = d_s.get("response", [])
-            if stats:
-                for kv in stats[0].get("statistics", []):
-                    if match_type_matches(kv["type"], cat_slug):
-                        val = safe_int(kv.get("value"))
-                        if val is not None:
-                            total += val
-        ranking.append((total, tname))
+            st_s, d_s = api_get("/fixtures/players", {"fixture": fid, "team": tid})
+            if st_s != 200: continue
 
-    # Ordenar y quedarnos con top 10
-    ranking.sort(reverse=True)
-    lines = [f"🏆 *Top Teams by {category_label}* (last 10 matches)\n"]
-    for i, (val, name) in enumerate(ranking[:10], start=1):
-        lines.append(f"{i}. {name}: {val}")
+            for block in d_s.get("response", []):
+                for pl in block.get("players", []):
+                    pname = pl["player"]["name"]
+                    pid   = pl["player"]["id"]
+                    stt   = (pl.get("statistics") or [{}])[0]
 
-    kb = [[B(tr(context,"btn_back"), f"ranking_{league_id}"), B(tr(context,"btn_home"), "home")]]
+                    val = map_stat(stt, category_label)
+                    if val is None: continue
+                    ranking.append((val, pname, tname))
+
+    # Ordenar top 10
+    ranking.sort(reverse=True, key=lambda x: x[0])
+    top10 = ranking[:10]
+
+    lines = [f"🏆 *Top 10 Players for {category_label}* (last {rng} matches)\n"]
+    for val, pname, tname in top10:
+        lines.append(f"{pname} ({tname}): {val}")
+
+    kb = [[B(tr(context,"btn_back"), f"rankcat_{league_id}_{cat_slug}"),
+           B(tr(context,"btn_home"), "home")]]
     await q.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
 
@@ -1228,6 +1269,16 @@ async def fixture_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb
     )
 
+@safe_handler
+async def ranking_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Resetear flow para ranking
+    context.user_data["mode"] = "ranking"
+    await update.message.reply_text(
+        "🌍 Choose a region for ranking:",
+        reply_markup=kb_regions(context)
+    )
+
+
 
 # ----------------- main -----------------
 def main():
@@ -1279,9 +1330,12 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_fx_home,  pattern=r"^fxhome_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_fx_away,  pattern=r"^fxaway_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_fx_range, pattern=r"^fxrange_(5|10)$"))
+
+    #rankings
+    app.add_handler(CommandHandler("ranking", ranking_cmd))
+    app.add_handler(CallbackQueryHandler(handle_ranking_range, pattern=r"^rankrange_(5|10|15)$"))
+
     
-
-
 
     print("✅ Bot en marcha…")
     app.run_polling()
