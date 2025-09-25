@@ -668,23 +668,26 @@ async def handle_fx_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-
 #@restricted
 async def handle_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+
     if q.data.startswith("nteam_"):
-        team_id = q.data.replace("nteam_","")
+        team_id = q.data.replace("nteam_", "")
     else:
-        team_id = q.data.replace("team_","")
+        team_id = q.data.replace("team_", "")
+
     context.user_data["team_id"] = team_id
+
     # usar slugs seguros
     cat_pairs = [(c, slugify(c)) for c in CATS]
     kb = make_keyboard(cat_pairs, prefix="cat_", cols=2)
+
     back_cb = f"league_{context.user_data.get('league_id','')}" if context.user_data.get("league_id") else "menu_stats"
     kb.append([B(tr(context,"btn_back"), back_cb), B(tr(context,"btn_home"), "home")])
+
     await q.edit_message_text(tr(context,"choose_category"), reply_markup=InlineKeyboardMarkup(kb))
-    kb = make_keyboard(cat_pairs, prefix="cat_", cols=2)
-    kb.append([B("🏆 Team Ranking", f"ranking_{context.user_data['league_id']}")])
+
 
 @safe_handler
 #@restricted
@@ -866,15 +869,21 @@ async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @safe_handler
 #@restricted
+@safe_handler
 async def handle_global(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     _, team_id, cat_slug = q.data.split("_", 2)
     category_label = CAT_SLUG.get(cat_slug, cat_slug)
 
-    # roster
+    # roster con /players
     page = 1; players = []
     while True:
-        status, data = api_get("/players", {"team": team_id, "season": SEASON, "league": context.user_data.get("league_id"), "page": page})
+        status, data = api_get("/players", {
+            "team": team_id,
+            "season": SEASON,
+            "league": context.user_data.get("league_id"),
+            "page": page
+        })
         if status != 200: break
         chunk = data.get("response", [])
         if not chunk: break
@@ -882,20 +891,28 @@ async def handle_global(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if page >= int(data.get("paging",{}).get("total",1)): break
         page += 1
 
+    # 🔹 fallback a /players/squads si no hay jugadores
     if not players:
-        await q.edit_message_text(tr(context,"no_players"),
-                                  reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]]))
+        st, d = api_get("/players/squads", {"team": team_id})
+        players = d.get("response", [])[0].get("players", []) if st == 200 else []
+
+    if not players:
+        await q.edit_message_text(
+            tr(context,"no_players"),
+            reply_markup=InlineKeyboardMarkup([[B(tr(context,"btn_home"), "home")]])
+        )
         return
 
     lines = [f"🌍 *{category_label}* — Season {SEASON}/{SEASON+1}\n"]
     for p in players[:25]:
         name = p["player"]["name"]
-        st   = p["statistics"][0]
-        val  = map_stat(st, category_label)
-        lines.append(f"• {name}: `{val}`")
+        st   = (p.get("statistics") or [{}])[0]
+        val  = map_stat(st, category_label) if st else "-"
+        lines.append(f"• {name}: `{val if val is not None else '-'}`")
 
     kb = [[B(tr(context,"btn_back"), f"cat_{cat_slug}"), B(tr(context,"btn_home"), "home")]]
     await q.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
 
 # ----------------- TIMELINE (jugador por partido) -----------------
 @safe_handler
@@ -975,8 +992,16 @@ async def render_timeline_all(q, context):
                     pname = pl["player"]["name"]
                     stt = (pl.get("statistics") or [{}])[0]
 
-                    players[pid] = {"id": pid, "name": pname}   # guardamos jugador
-                    fixture_stats[fid][pid] = stt               # guardamos stats
+                    players[pid] = {"id": pid, "name": pname}
+                    fixture_stats[fid][pid] = stt
+
+    # 🔹 fallback si no hay jugadores desde /fixtures/players
+    if not players:
+        st, d = api_get("/players/squads", {"team": team_id})
+        squad = d.get("response", [])[0].get("players", []) if st == 200 else []
+        for pl in squad:
+            pid = pl["id"]
+            players[pid] = {"id": pid, "name": pl["name"]}
 
     if not players:
         await q.edit_message_text(tr(context,"no_players"),
@@ -1001,7 +1026,7 @@ async def render_timeline_all(q, context):
 
             if stt:
                 minutes = stt.get("games", {}).get("minutes", 0)
-                if minutes and minutes > 0:  
+                if minutes and minutes > 0:
                     v = map_stat(stt, category_label)
                     values.append(v if v is not None else 0)
                 else:
@@ -1290,15 +1315,17 @@ async def fixture_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb
     )
 
-@safe_handler
 async def ranking_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Resetear flow para ranking
-    context.user_data["mode"] = "ranking"
-    await update.message.reply_text(
-        "🌍 Choose a region for ranking:",
-        reply_markup=kb_regions(context)
-    )
+    st, d = api_get("/leagues", {"season": SEASON})
+    leagues = d.get("response", []) if st == 200 else []
 
+    if not leagues:
+        await update.message.reply_text("⚠️ No leagues found for this season.")
+        return
+
+    options = [(l["league"]["name"], l["league"]["id"]) for l in leagues]
+    kb = make_keyboard(options, prefix="rleague_", cols=2)
+    await update.message.reply_text("🏆 Choose a league for ranking:", reply_markup=InlineKeyboardMarkup(kb))
 
 
 # ----------------- main -----------------
