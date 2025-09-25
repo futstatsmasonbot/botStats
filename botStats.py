@@ -1316,16 +1316,98 @@ async def fixture_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def ranking_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    st, d = api_get("/leagues", {"season": SEASON})
-    leagues = d.get("response", []) if st == 200 else []
+    # Arranca igual que /stats pero con prefijo rregion_
+    await update.message.reply_text(
+        "🌍 Choose a region for ranking:",
+        reply_markup=kb_rregions(context)
+    )
 
-    if not leagues:
-        await update.message.reply_text("⚠️ No leagues found for this season.")
+def kb_rregions(ctx):
+    return InlineKeyboardMarkup([
+        [B("🇪🇺 Europe", "rregion_Europe"), B("🌎 Americas", "rregion_Americas")],
+        [B("🕌 Middle East", "rregion_MiddleEast"), B("🌐 Others", "rregion_Others")],
+        [B("⭐ Quick access", "rregion_POPULAR"), B("🏳️ National Teams", "rregion_NATIONALS")],
+        [B(tr(ctx,"btn_home"), "home")]
+    ])
+
+async def handle_rregion(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    region = q.data.replace("rregion_", "")
+
+    # Popular
+    if region == "POPULAR":
+        rows = make_keyboard(list(POPULAR_LEAGUES.items()), prefix="rleague_", cols=2)
+        rows.append([B(tr(context,"btn_back"), "menu_ranking"), B(tr(context,"btn_home"), "home")])
+        await q.edit_message_text(tr(context,"popular_block"), reply_markup=InlineKeyboardMarkup(rows))
         return
 
-    options = [(l["league"]["name"], l["league"]["id"]) for l in leagues]
-    kb = make_keyboard(options, prefix="rleague_", cols=2)
-    await update.message.reply_text("🏆 Choose a league for ranking:", reply_markup=InlineKeyboardMarkup(kb))
+    # Nationals
+    if region == "NATIONALS":
+        all_countries = sorted(set(sum(REGIONS.values(), [])))
+        rows = make_keyboard([(c, c) for c in all_countries], prefix="rcountry_", cols=2)
+        rows.append([B(tr(context,"btn_back"), "menu_ranking"), B(tr(context,"btn_home"), "home")])
+        await q.edit_message_text(tr(context,"choose_country_national"), reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    # Normal regions
+    countries = REGIONS.get(region, [])
+    rows = make_keyboard([(c, c) for c in countries], prefix="rcountry_", cols=2)
+    rows.append([B(tr(context,"btn_back"), "menu_ranking"), B(tr(context,"btn_home"), "home")])
+    await q.edit_message_text(tr(context,"select_country"), reply_markup=InlineKeyboardMarkup(rows))
+
+async def handle_rcountry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    country = q.data.replace("rcountry_", "")
+
+    status, data = api_get("/leagues", {"country": country})
+    leagues = data.get("response", []) if status == 200 else []
+
+    if country in ALLOWED_LEAGUES:
+        allowed_ids = set(ALLOWED_LEAGUES[country])
+        leagues = [l for l in leagues if l["league"]["id"] in allowed_ids]
+        options = [(f"{l['league']['name']} ({country})", l["league"]["id"]) for l in leagues]
+    else:
+        options = filter_top_leagues(leagues)
+
+    if not options:
+        rows = [[B(tr(context,"btn_back"), "menu_ranking"), B(tr(context,"btn_home"), "home")]]
+        await q.edit_message_text("⚠️ No leagues found for this country.", reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    rows = make_keyboard(options, prefix="rleague_", cols=2)
+    rows.append([B(tr(context,"btn_back"), "menu_ranking"), B(tr(context,"btn_home"), "home")])
+    await q.edit_message_text(tr(context,"select_league"), reply_markup=InlineKeyboardMarkup(rows))
+
+async def handle_rleague(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    league_id = q.data.replace("rleague_", "")
+    context.user_data["ranking_league"] = league_id
+
+    cat_pairs = [(c, slugify(c)) for c in CATS]
+    kb = make_keyboard(cat_pairs, prefix=f"rankcat_{league_id}_", cols=2)
+    kb.append([B(tr(context,"btn_back"), "menu_ranking"), B(tr(context,"btn_home"), "home")])
+    await q.edit_message_text("📈 Choose ranking category:", reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def handle_rcountry_national(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    country = q.data.replace("rncountry_", "")
+
+    st, d = api_get("/teams", {"country": country, "type": "National"})
+    items = d.get("response", []) if st == 200 else []
+    if not items:
+        rows = [[B(tr(context,"btn_back"), "menu_ranking"), B(tr(context,"btn_home"), "home")]]
+        await q.edit_message_text(tr(context,"no_nat_team"), reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    teams = [(t["team"]["name"], t["team"]["id"]) for t in items]
+    rows = make_keyboard(teams, prefix="rteam_", cols=2)
+    rows.append([B(tr(context,"btn_back"), "menu_ranking"), B(tr(context,"btn_home"), "home")])
+    await q.edit_message_text(tr(context,"select_team"), reply_markup=InlineKeyboardMarkup(rows))
+
+async def menu_ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.edit_message_text("🌍 Choose a region for ranking:", reply_markup=kb_rregions(context))
 
 
 # ----------------- main -----------------
@@ -1382,6 +1464,14 @@ def main():
     #rankings
     app.add_handler(CommandHandler("ranking", ranking_cmd))
     app.add_handler(CallbackQueryHandler(handle_ranking_range, pattern=r"^rankrange_(5|10|15)$"))
+    app.add_handler(CallbackQueryHandler(handle_rregion,  pattern=r"^rregion_.+"))
+    app.add_handler(CallbackQueryHandler(handle_rcountry, pattern=r"^rcountry_.+"))
+    app.add_handler(CallbackQueryHandler(handle_rcountry_national, pattern=r"^rncountry_.+"))
+    app.add_handler(CallbackQueryHandler(handle_rleague,  pattern=r"^rleague_\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_ranking_category, pattern=r"^rankcat_\d+_[a-z0-9\-]+$"))
+    app.add_handler(CallbackQueryHandler(menu_ranking, pattern=r"^menu_ranking$"))
+
+
 
     
 
